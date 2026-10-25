@@ -71,6 +71,8 @@ enum ReadAttr {
     CpuLimit(AcStateParam),
     /// Read whether NVIDIA Dynamic Boost (nvidia-powerd) is running
     DynamicBoost,
+    /// Read whether CPU turbo boost is on for a profile
+    Turbo(AcStateParam),
 }
 
 #[derive(Subcommand)]
@@ -95,6 +97,8 @@ enum WriteAttr {
     CpuLimit(CpuLimitParams),
     /// Start or stop NVIDIA Dynamic Boost (nvidia-powerd)
     DynamicBoost(DynamicBoostParams),
+    /// Switch CPU turbo boost for a profile
+    Turbo(TurboParams),
 }
 
 #[derive(Parser)]
@@ -169,6 +173,13 @@ struct CpuLimitParams {
 
 #[derive(Parser)]
 struct DynamicBoostParams {
+    state: OnOff,
+}
+
+#[derive(Parser)]
+struct TurboParams {
+    /// battery/plugged in
+    ac_state: AcState,
     state: OnOff,
 }
 
@@ -344,6 +355,7 @@ fn main() {
             ReadAttr::Gpu => read_gpu_status(),
             ReadAttr::CpuLimit(AcStateParam { ac_state }) => read_cpu_limit(ac_state.as_index()),
             ReadAttr::DynamicBoost => read_dynamic_boost(),
+            ReadAttr::Turbo(AcStateParam { ac_state }) => read_turbo(ac_state.as_index()),
         },
         Args::Write { attr } => match attr {
             WriteAttr::Fan(FanParams { ac_state, speed }) => {
@@ -371,6 +383,9 @@ fn main() {
             WriteAttr::GpuMode(GpuModeParams { mode }) => write_gpu_mode(&mode),
             WriteAttr::CpuLimit(CpuLimitParams { ac_state, pl1, pl2 }) => {
                 write_cpu_limit(ac_state.as_index(), &pl1, pl2)
+            }
+            WriteAttr::Turbo(TurboParams { ac_state, state }) => {
+                write_turbo(ac_state.as_index(), state.is_on())
             }
             WriteAttr::DynamicBoost(DynamicBoostParams { state }) => {
                 write_dynamic_boost(state.is_on())
@@ -903,6 +918,30 @@ fn write_cpu_limit(ac: usize, pl1: &str, pl2: Option<u32>) {
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: true }) => read_cpu_limit(ac),
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: false }) => {
             eprintln!("Failed to set CPU power limit (PL1 5-250 W, PL2 at least PL1)")
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn read_turbo(ac: usize) {
+    match send_data(comms::DaemonCommand::GetTurbo { ac }) {
+        Some(comms::DaemonResponse::GetTurbo {
+            available: false, ..
+        }) => println!("CPU turbo: not controllable"),
+        Some(comms::DaemonResponse::GetTurbo { enabled, .. }) => {
+            println!("CPU turbo: {}", if enabled { "on" } else { "off" })
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn write_turbo(ac: usize, enabled: bool) {
+    match send_data(comms::DaemonCommand::SetTurbo { ac, enabled }) {
+        Some(comms::DaemonResponse::SetTurbo { result: true }) => read_turbo(ac),
+        Some(comms::DaemonResponse::SetTurbo { result: false }) => {
+            eprintln!("Failed to set CPU turbo (is the tmpfiles rule installed?)")
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),

@@ -110,6 +110,13 @@ pub enum DaemonCommand {
         enabled: bool,
     },
     GetNvidiaPowerd,
+    SetTurbo {
+        ac: usize,
+        enabled: bool,
+    },
+    GetTurbo {
+        ac: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -215,6 +222,14 @@ pub enum DaemonResponse {
     GetNvidiaPowerd {
         available: bool,
         active: bool,
+    },
+    SetTurbo {
+        result: bool,
+    },
+    GetTurbo {
+        /// Whether turbo can be controlled at all
+        available: bool,
+        enabled: bool,
     },
 }
 

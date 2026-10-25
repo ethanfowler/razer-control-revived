@@ -108,6 +108,34 @@ fn set_cpu_power_limit(ac: bool, limit: Option<(u32, u32)>) -> Option<bool> {
     }
 }
 
+/// Whether CPU turbo is (controllable, enabled) for a profile
+fn get_turbo(ac: bool) -> Option<(bool, bool)> {
+    let response = send_data(comms::DaemonCommand::GetTurbo { ac: ac as usize })?;
+    use comms::DaemonResponse::*;
+    match response {
+        GetTurbo { available, enabled } => Some((available, enabled)),
+        response => {
+            println!("Instead of GetTurbo got {response:?}");
+            None
+        }
+    }
+}
+
+fn set_turbo(ac: bool, enabled: bool) -> Option<bool> {
+    let response = send_data(comms::DaemonCommand::SetTurbo {
+        ac: ac as usize,
+        enabled,
+    })?;
+    use comms::DaemonResponse::*;
+    match response {
+        SetTurbo { result } => Some(result),
+        response => {
+            println!("Instead of SetTurbo got {response:?}");
+            None
+        }
+    }
+}
+
 /// Whether nvidia-powerd is (installed, running)
 fn get_nvidia_powerd() -> Option<(bool, bool)> {
     let response = send_data(comms::DaemonCommand::GetNvidiaPowerd)?;
@@ -1389,6 +1417,15 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     cpu_combo.set_visible(show_boost);
     gpu_combo.set_visible(show_boost);
 
+    let turbo = get_turbo(initial_ac);
+    let turbo_switch = make_switch_row(
+        "CPU Turbo Boost",
+        "Let the processor clock above its base frequency. Off is cooler and quieter",
+        turbo.is_some_and(|(_, enabled)| enabled),
+    );
+    turbo_switch.set_visible(turbo.is_some_and(|(available, _)| available));
+    power_section.add_row(&turbo_switch);
+
     let cpu_limit = get_cpu_power_limit(initial_ac);
     let cpu_limit_slider = SliderRow::new(
         "CPU Power Limit",
@@ -1452,9 +1489,13 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let min_fan = min_fan_speed;
         let cpu_limit_scale = cpu_limit_slider.scale.clone();
         let cpu_limit_subtitle = cpu_limit_slider.subtitle.clone();
+        let turbo_switch = turbo_switch.clone();
         move || {
             refreshing.set(true);
             let ac = is_ac.get();
+            if let Some((_, enabled)) = get_turbo(ac) {
+                turbo_switch.set_active(enabled);
+            }
             let cpu_limit = get_cpu_power_limit(ac);
             cpu_limit_scale.set_value(cpu_limit_notch(cpu_limit.and_then(|l| l.0)));
             cpu_limit_subtitle.set_label(&cpu_limit_description(cpu_limit));
@@ -1578,6 +1619,19 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
                 set_power(ac, (profile, cpu, gpu));
             }
         ));
+    }
+
+    {
+        let is_ac = is_ac.clone();
+        let refreshing = refreshing.clone();
+        turbo_switch.connect_active_notify(move |sw| {
+            if refreshing.get() {
+                return;
+            }
+            if set_turbo(is_ac.get(), sw.is_active()) != Some(true) {
+                show_toast(sw, "Failed to switch CPU turbo");
+            }
+        });
     }
 
     // CPU power limit: notch 0 follows the power mode, the rest fix the limit

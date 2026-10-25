@@ -50,6 +50,8 @@ install() {
         udevadm control --reload-rules
         udevadm trigger --subsystem-match=powercap
         install -Dm644 data/polkit/70-razercontrol-nvidia-powerd.rules /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
+        install -Dm644 data/tmpfiles/razercontrol.conf /etc/tmpfiles.d/razercontrol.conf
+        systemd-tmpfiles --create /etc/tmpfiles.d/razercontrol.conf
 EOF
 
     if [ $? -ne 0 ]; then
@@ -111,6 +113,7 @@ uninstall() {
         rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
         rm -f /etc/udev/rules.d/70-razercontrol-powercap.rules
         rm -f /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
+        rm -f /etc/tmpfiles.d/razercontrol.conf
         udevadm control --reload-rules
 EOF
 

@@ -18,6 +18,9 @@ pub struct PowerConfig {
     /// Fixed CPU power limits, overriding the ones that follow the power mode
     #[serde(default)]
     pub cpu_power_limit: Option<CpuPowerLimit>,
+    /// CPU turbo boost; None leaves it as it is
+    #[serde(default)]
+    pub turbo: Option<bool>,
 }
 
 impl PowerConfig {
@@ -32,6 +35,7 @@ impl PowerConfig {
             screensaver: false,
             idle: 0,
             cpu_power_limit: None,
+            turbo: None,
         }
     }
 }

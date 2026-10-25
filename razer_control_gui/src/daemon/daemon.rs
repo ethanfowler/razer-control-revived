@@ -25,6 +25,7 @@ mod nvidia_powerd;
 mod powercap;
 mod screensaver;
 mod thermal;
+mod turbo;
 
 use crate::kbd::Effect;
 
@@ -675,6 +676,18 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                 Some(comms::DaemonResponse::GetCpuPowerLimit {
                     fixed: fixed.map(watts),
                     applied: applied.map(watts),
+                })
+            }
+            comms::DaemonCommand::SetTurbo { ac, enabled } if ac < 2 => {
+                Some(comms::DaemonResponse::SetTurbo {
+                    result: d.set_turbo(ac, enabled),
+                })
+            }
+            comms::DaemonCommand::GetTurbo { ac } if ac < 2 => {
+                let enabled = d.get_turbo(ac);
+                Some(comms::DaemonResponse::GetTurbo {
+                    available: enabled.is_some(),
+                    enabled: enabled.unwrap_or(false),
                 })
             }
             comms::DaemonCommand::GetDeviceName => {

@@ -4,6 +4,7 @@ use crate::config;
 use crate::config::CpuPowerLimit;
 use crate::dbus_mutter_idlemonitor;
 use crate::powercap;
+use crate::turbo;
 use dbus::blocking::Connection;
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
@@ -339,18 +340,49 @@ impl DeviceManager {
         res
     }
 
-    /// Apply the CPU package power limits for the active AC profile
+    /// Apply the CPU package power limits and turbo for the active AC profile
     fn apply_cpu_power_limits(&mut self) {
         let ac = match self.get_device() {
             Some(laptop) => laptop.get_ac_state(),
             None => return,
         };
-        let limit = self
-            .get_config()
-            .and_then(|config| config.cpu_power_limits.for_profile(&config.power[ac]));
-        if let Some(limit) = limit {
+        let Some(config) = self.get_config() else {
+            return;
+        };
+        if let Some(limit) = config.cpu_power_limits.for_profile(&config.power[ac]) {
             powercap::apply(limit);
         }
+        if let Some(enabled) = config.power[ac].turbo
+            && turbo::get() != Some(enabled)
+        {
+            turbo::set(enabled);
+        }
+    }
+
+    /// Set CPU turbo for a profile, applying it if the profile is active
+    pub fn set_turbo(&mut self, ac: usize, enabled: bool) -> bool {
+        if let Some(config) = self.get_config() {
+            config.power[ac].turbo = Some(enabled);
+            if let Err(e) = config.write_to_file() {
+                eprintln!("Error write config {:?}", e);
+            }
+        } else {
+            return false;
+        }
+        let active = self.get_device().map(|laptop| laptop.get_ac_state());
+        if active == Some(ac) {
+            turbo::set(enabled)
+        } else {
+            true
+        }
+    }
+
+    /// Whether a profile runs with turbo: its setting, else the current state.
+    /// None if turbo can't be controlled.
+    pub fn get_turbo(&mut self, ac: usize) -> Option<bool> {
+        let current = turbo::get()?;
+        let configured = self.get_config().and_then(|config| config.power[ac].turbo);
+        Some(configured.unwrap_or(current))
     }
 
     /// Fix the CPU power limits for a profile, or None to follow the power mode

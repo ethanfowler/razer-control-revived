@@ -50,6 +50,9 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=powercap
 # nvidia-powerd (Dynamic Boost): the razercontrol group may start and stop it
 sudo install -Dm644 "$BUILD_DIR/data/polkit/70-razercontrol-nvidia-powerd.rules" /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
+# CPU turbo: the razercontrol group may switch it
+sudo install -Dm644 "$BUILD_DIR/data/tmpfiles/razercontrol.conf" /etc/tmpfiles.d/razercontrol.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/razercontrol.conf
 
 # Install systemd user service
 echo "Installing systemd user service..."
