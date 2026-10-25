@@ -97,6 +97,7 @@ pub enum DaemonCommand {
     SetGpuMode {
         mode: String,
     },
+    GetLiveFanRpm,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -181,6 +182,10 @@ pub enum DaemonResponse {
     SetGpuMode {
         result: bool,
         message: String,
+    },
+    GetLiveFanRpm {
+        /// Measured RPM per fan zone (CPU, GPU); empty if the EC can't report it.
+        rpms: Vec<u16>,
     },
 }
 

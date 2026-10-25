@@ -595,6 +595,17 @@ fn read_fan_rpm(ac: usize) {
 }
 
 fn read_actual_fan_rpm() {
+    // Prefer the measured speed per fan; older ECs only report the setpoint.
+    if let Some(comms::DaemonResponse::GetLiveFanRpm { rpms }) =
+        send_data(comms::DaemonCommand::GetLiveFanRpm)
+        && !rpms.is_empty()
+    {
+        let names = ["CPU", "GPU"];
+        for (i, rpm) in rpms.iter().enumerate() {
+            println!("{} fan: {} RPM", names.get(i).unwrap_or(&"Fan"), rpm);
+        }
+        return;
+    }
     match send_data(comms::DaemonCommand::GetActualFanRpm) {
         Some(comms::DaemonResponse::GetActualFanRpm { rpm }) => {
             println!("{}", rpm);

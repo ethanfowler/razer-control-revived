@@ -479,6 +479,12 @@ impl DeviceManager {
         0
     }
 
+    pub fn get_live_fan_rpms(&mut self) -> Vec<u16> {
+        self.get_device()
+            .and_then(|laptop| laptop.read_live_fan_rpms())
+            .unwrap_or_default()
+    }
+
     pub fn get_actual_fan_rpm(&mut self) -> i32 {
         if let Some(laptop) = self.get_device() {
             return laptop.read_fan_rpm_from_ec() as i32;
@@ -771,6 +777,7 @@ pub struct RazerLaptop {
     fan_rpm: u8,  // need for power
     ac_state: u8, // index config array
     screensaver: bool,
+    live_fan_rpm_failures: u8,
 }
 //
 impl RazerLaptop {
@@ -807,6 +814,7 @@ impl RazerLaptop {
             fan_rpm: 0,
             ac_state: 0,
             screensaver: false,
+            live_fan_rpm_failures: 0,
         }
     }
 
@@ -952,6 +960,34 @@ impl RazerLaptop {
         report.args[2] = 0x00;
         self.send_report(report)
             .map(|response| response.args[2] as u16 * 100)
+    }
+
+    /// Read each zone's measured fan speed with 0x88 (Get Thermal Fan Current
+    /// Speed). Unlike 0x81 this tracks the real fan, including 0 RPM when the EC
+    /// stops it in auto mode. Gives up after repeated failures so ECs without
+    /// 0x88 aren't queried (and retried) on every poll.
+    pub fn read_live_fan_rpms(&mut self) -> Option<Vec<u16>> {
+        if self.live_fan_rpm_failures >= LIVE_FAN_RPM_MAX_FAILURES {
+            return None;
+        }
+        let mut rpms = Vec::with_capacity(2);
+        for zone in [0x01, 0x02] {
+            let mut report: RazerPacket = RazerPacket::new(0x0d, 0x88, 0x03);
+            report.args[0] = 0x00;
+            report.args[1] = zone;
+            match self.send_report(report) {
+                // The reply echoes the zone; reject one answering another request.
+                Some(response) if response.args[1] == zone => {
+                    rpms.push(response.args[2] as u16 * 100)
+                }
+                _ => {
+                    self.live_fan_rpm_failures += 1;
+                    return None;
+                }
+            }
+        }
+        self.live_fan_rpm_failures = 0;
+        Some(rpms)
     }
 
     pub fn read_fan_setting(&mut self) -> Option<u16> {
@@ -1255,6 +1291,7 @@ impl RazerLaptop {
 /// Power profile indices as stored in the config and shown by the frontends
 /// (0=Balanced, 1=Gaming, 2=Creator, 3=Silent, 4=Custom).
 const POWER_MODE_SILENT: u8 = 3;
+const LIVE_FAN_RPM_MAX_FAILURES: u8 = 3;
 const POWER_MODE_CUSTOM: u8 = 4;
 /// EC wire value for Silent. Synapse sends 0x05 (Blade 16 2025 USB captures,
 /// Blade 14 2023 #39); 0x03 is Battery Saver on current ECs and an undefined
