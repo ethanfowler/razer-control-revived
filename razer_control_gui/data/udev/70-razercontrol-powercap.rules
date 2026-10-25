@@ -1,0 +1,4 @@
+# Razer Laptop Control - let the razercontrol group set CPU package power limits
+# The user daemon applies PL1/PL2 (long/short term) per power mode. Only those two
+# attributes are opened up: energy counters, time windows and the peak limit stay root-only.
+SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0|intel-rapl-mmio:0", RUN+="/usr/bin/chgrp razercontrol /sys%p/constraint_0_power_limit_uw /sys%p/constraint_1_power_limit_uw", RUN+="/usr/bin/chmod g+w /sys%p/constraint_0_power_limit_uw /sys%p/constraint_1_power_limit_uw"

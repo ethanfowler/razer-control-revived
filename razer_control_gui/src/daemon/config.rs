@@ -32,6 +32,64 @@ impl PowerConfig {
     }
 }
 
+/// CPU package power limits in watts.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+pub struct CpuPowerLimit {
+    pub pl1: u32, // sustained (long term)
+    pub pl2: u32, // burst (short term)
+}
+
+/// CPU package power limits applied alongside each power mode. The EC modes
+/// don't touch RAPL on Linux, so without these the firmware's limits apply in
+/// every mode. Disabling leaves whatever limits are currently set.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CpuPowerLimits {
+    pub enabled: bool,
+    pub balanced: CpuPowerLimit,
+    pub gaming: CpuPowerLimit,
+    pub creator: CpuPowerLimit,
+    pub silent: CpuPowerLimit,
+    /// Custom mode, indexed by CPU boost level (Low, Medium, High, Boost)
+    pub custom: [CpuPowerLimit; 4],
+}
+
+impl Default for CpuPowerLimits {
+    fn default() -> CpuPowerLimits {
+        let limit = |pl1, pl2| CpuPowerLimit { pl1, pl2 };
+        CpuPowerLimits {
+            enabled: true,
+            balanced: limit(55, 115),
+            gaming: limit(120, 160),
+            creator: limit(80, 157),
+            silent: limit(25, 45),
+            custom: [
+                limit(35, 65),
+                limit(55, 115),
+                limit(90, 157),
+                limit(120, 160),
+            ],
+        }
+    }
+}
+
+impl CpuPowerLimits {
+    /// Limits for a power mode (0 Balanced, 1 Gaming, 2 Creator, 3 Silent,
+    /// 4 Custom), or None when disabled or the mode is unknown.
+    pub fn for_mode(&self, power_mode: u8, cpu_boost: u8) -> Option<CpuPowerLimit> {
+        if !self.enabled {
+            return None;
+        }
+        match power_mode {
+            0 => Some(self.balanced),
+            1 => Some(self.gaming),
+            2 => Some(self.creator),
+            3 => Some(self.silent),
+            4 => self.custom.get(usize::from(cpu_boost)).copied(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Configuration {
     pub power: [PowerConfig; 2],
@@ -47,6 +105,8 @@ pub struct Configuration {
     pub gui_effect: u8, // GUI custom effect index (0=Static, 1=StaticGradient, 2=WaveGradient, 3=Breathing)
     #[serde(default)]
     pub gui_effect_params: Vec<u8>, // GUI effect color params (RGB bytes)
+    #[serde(default)]
+    pub cpu_power_limits: CpuPowerLimits,
 }
 
 fn default_bho_threshold() -> u8 {
@@ -65,6 +125,7 @@ impl Configuration {
             bho_threshold: 80,
             gui_effect: 0,
             gui_effect_params: vec![],
+            cpu_power_limits: CpuPowerLimits::default(),
         }
     }
 
@@ -105,4 +166,37 @@ fn get_home_directory() -> String {
 fn ensure_config_dir() -> io::Result<()> {
     let dir = get_home_directory() + "/.local/share/razercontrol";
     fs::create_dir_all(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_power_limits_follow_mode_and_custom_boost() {
+        let limits = CpuPowerLimits::default();
+        assert_eq!(limits.for_mode(3, 0), Some(limits.silent));
+        assert_eq!(limits.for_mode(1, 0), Some(limits.gaming));
+        assert_eq!(limits.for_mode(4, 0), Some(limits.custom[0]));
+        assert_eq!(limits.for_mode(4, 3), Some(limits.custom[3]));
+        assert_eq!(limits.for_mode(4, 4), None);
+        assert_eq!(limits.for_mode(5, 0), None);
+    }
+
+    #[test]
+    fn disabled_cpu_power_limits_apply_nothing() {
+        let limits = CpuPowerLimits {
+            enabled: false,
+            ..CpuPowerLimits::default()
+        };
+        assert_eq!(limits.for_mode(0, 0), None);
+    }
+
+    #[test]
+    fn configs_without_cpu_power_limits_get_defaults() {
+        let mut json = serde_json::to_value(Configuration::new()).unwrap();
+        json.as_object_mut().unwrap().remove("cpu_power_limits");
+        let config: Configuration = serde_json::from_value(json).unwrap();
+        assert_eq!(config.cpu_power_limits, CpuPowerLimits::default());
+    }
 }

@@ -2,6 +2,7 @@
 use crate::battery;
 use crate::config;
 use crate::dbus_mutter_idlemonitor;
+use crate::powercap;
 use dbus::blocking::Connection;
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
@@ -330,10 +331,21 @@ impl DeviceManager {
                 res = true;
             } else {
                 res = laptop.set_power_mode(pwr, cpu, gpu);
+                self.apply_cpu_power_limits(pwr, cpu);
             }
         }
 
         res
+    }
+
+    /// Apply the CPU package power limits configured for a power mode
+    fn apply_cpu_power_limits(&mut self, power_mode: u8, cpu_boost: u8) {
+        let limit = self
+            .get_config()
+            .and_then(|config| config.cpu_power_limits.for_mode(power_mode, cpu_boost));
+        if let Some(limit) = limit {
+            powercap::apply(limit);
+        }
     }
 
     pub fn get_standard_effect(&mut self) -> (u8, Vec<u8>) {
@@ -551,6 +563,7 @@ impl DeviceManager {
             && let Some(laptop) = self.get_device()
         {
             laptop.set_config(config);
+            self.apply_cpu_power_limits(config.power_mode, config.cpu_boost);
         }
     }
 
@@ -578,6 +591,7 @@ impl DeviceManager {
                 && let Some(laptop) = self.get_device()
             {
                 laptop.set_config(config);
+                self.apply_cpu_power_limits(config.power_mode, config.cpu_boost);
             }
         }
     }

@@ -42,6 +42,12 @@ sudo install -Dm644 "$BUILD_DIR/data/gui/com.github.encomjp.razercontrol.svg" /u
 echo "Installing udev rules..."
 sudo rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
 sudo install -Dm644 "$BUILD_DIR/data/udev/70-razercontrol-hidraw.rules" /etc/udev/rules.d/70-razercontrol-hidraw.rules
+# CPU power limits: writable by the razercontrol group (takes effect after re-login)
+sudo groupadd -f razercontrol
+sudo usermod -aG razercontrol "$USER"
+sudo install -Dm644 "$BUILD_DIR/data/udev/70-razercontrol-powercap.rules" /etc/udev/rules.d/70-razercontrol-powercap.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=powercap
 
 # Install systemd user service
 echo "Installing systemd user service..."

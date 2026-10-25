@@ -21,6 +21,7 @@ mod device;
 mod gpu;
 mod kbd;
 mod login1;
+mod powercap;
 mod screensaver;
 mod thermal;
 

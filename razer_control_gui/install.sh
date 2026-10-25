@@ -44,7 +44,11 @@ install() {
         cp data/devices/laptops.json /usr/share/razercontrol/
         rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
         cp data/udev/70-razercontrol-hidraw.rules /etc/udev/rules.d/
+        groupadd -f razercontrol
+        usermod -aG razercontrol $USER
+        cp data/udev/70-razercontrol-powercap.rules /etc/udev/rules.d/
         udevadm control --reload-rules
+        udevadm trigger --subsystem-match=powercap
 EOF
 
     if [ $? -ne 0 ]; then
@@ -104,6 +108,7 @@ uninstall() {
         rm -f /usr/share/razercontrol/laptops.json
         rm -f /etc/udev/rules.d/70-razercontrol-hidraw.rules
         rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
+        rm -f /etc/udev/rules.d/70-razercontrol-powercap.rules
         udevadm control --reload-rules
 EOF
 
