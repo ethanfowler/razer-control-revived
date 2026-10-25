@@ -1,6 +1,7 @@
 // mod kbd;
 use crate::battery;
 use crate::config;
+use crate::config::CpuPowerLimit;
 use crate::dbus_mutter_idlemonitor;
 use crate::powercap;
 use dbus::blocking::Connection;
@@ -331,20 +332,56 @@ impl DeviceManager {
                 res = true;
             } else {
                 res = laptop.set_power_mode(pwr, cpu, gpu);
-                self.apply_cpu_power_limits(pwr, cpu);
+                self.apply_cpu_power_limits();
             }
         }
 
         res
     }
 
-    /// Apply the CPU package power limits configured for a power mode
-    fn apply_cpu_power_limits(&mut self, power_mode: u8, cpu_boost: u8) {
+    /// Apply the CPU package power limits for the active AC profile
+    fn apply_cpu_power_limits(&mut self) {
+        let ac = match self.get_device() {
+            Some(laptop) => laptop.get_ac_state(),
+            None => return,
+        };
         let limit = self
             .get_config()
-            .and_then(|config| config.cpu_power_limits.for_mode(power_mode, cpu_boost));
+            .and_then(|config| config.cpu_power_limits.for_profile(&config.power[ac]));
         if let Some(limit) = limit {
             powercap::apply(limit);
+        }
+    }
+
+    /// Fix the CPU power limits for a profile, or None to follow the power mode
+    pub fn set_cpu_power_limit(&mut self, ac: usize, limit: Option<CpuPowerLimit>) -> bool {
+        if ac > 1 || limit.is_some_and(|l| !l.is_valid()) {
+            eprintln!("Rejected CPU power limit {limit:?} for profile {ac}");
+            return false;
+        }
+        if let Some(config) = self.get_config() {
+            config.power[ac].cpu_power_limit = limit;
+            if let Err(e) = config.write_to_file() {
+                eprintln!("Error write config {:?}", e);
+            }
+        } else {
+            return false;
+        }
+        self.apply_cpu_power_limits();
+        true
+    }
+
+    /// The profile's fixed CPU power limits, and the limits it applies
+    pub fn get_cpu_power_limit(
+        &mut self,
+        ac: usize,
+    ) -> (Option<CpuPowerLimit>, Option<CpuPowerLimit>) {
+        match self.get_config() {
+            Some(config) if ac <= 1 => (
+                config.power[ac].cpu_power_limit,
+                config.cpu_power_limits.for_profile(&config.power[ac]),
+            ),
+            _ => (None, None),
         }
     }
 
@@ -563,7 +600,7 @@ impl DeviceManager {
             && let Some(laptop) = self.get_device()
         {
             laptop.set_config(config);
-            self.apply_cpu_power_limits(config.power_mode, config.cpu_boost);
+            self.apply_cpu_power_limits();
         }
     }
 
@@ -591,7 +628,7 @@ impl DeviceManager {
                 && let Some(laptop) = self.get_device()
             {
                 laptop.set_config(config);
-                self.apply_cpu_power_limits(config.power_mode, config.cpu_boost);
+                self.apply_cpu_power_limits();
             }
         }
     }

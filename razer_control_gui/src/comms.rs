@@ -98,6 +98,14 @@ pub enum DaemonCommand {
         mode: String,
     },
     GetLiveFanRpm,
+    SetCpuPowerLimit {
+        ac: usize,
+        /// Fixed (PL1, PL2) in watts, or None to follow the power mode
+        limit: Option<(u32, u32)>,
+    },
+    GetCpuPowerLimit {
+        ac: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -186,6 +194,15 @@ pub enum DaemonResponse {
     GetLiveFanRpm {
         /// Measured RPM per fan zone (CPU, GPU); empty if the EC can't report it.
         rpms: Vec<u16>,
+    },
+    SetCpuPowerLimit {
+        result: bool,
+    },
+    GetCpuPowerLimit {
+        /// The profile's fixed (PL1, PL2) in watts, if set
+        fixed: Option<(u32, u32)>,
+        /// What the profile applies: the fixed limits or the mode's
+        applied: Option<(u32, u32)>,
     },
 }
 

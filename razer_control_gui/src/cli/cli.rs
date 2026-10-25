@@ -67,6 +67,8 @@ enum ReadAttr {
     FanRpm,
     /// Read GPU status information
     Gpu,
+    /// Read the CPU power limits for a profile
+    CpuLimit(AcStateParam),
 }
 
 #[derive(Subcommand)]
@@ -87,6 +89,8 @@ enum WriteAttr {
     RuntimePm(RuntimePmParams),
     /// Set GPU mode via envycontrol (hybrid, integrated, nvidia)
     GpuMode(GpuModeParams),
+    /// Fix the CPU power limits for a profile, or follow the power mode
+    CpuLimit(CpuLimitParams),
 }
 
 #[derive(Parser)]
@@ -147,6 +151,16 @@ struct RuntimePmParams {
 struct GpuModeParams {
     /// GPU mode: hybrid, integrated, or nvidia
     mode: String,
+}
+
+#[derive(Parser)]
+struct CpuLimitParams {
+    /// battery/plugged in
+    ac_state: AcState,
+    /// sustained limit (PL1) in watts, or "auto" to follow the power mode
+    pl1: String,
+    /// burst limit (PL2) in watts; defaults to PL1
+    pl2: Option<u32>,
 }
 
 #[derive(ValueEnum, Clone)]
@@ -319,6 +333,7 @@ fn main() {
             ReadAttr::Bho => read_bho(),
             ReadAttr::FanRpm => read_actual_fan_rpm(),
             ReadAttr::Gpu => read_gpu_status(),
+            ReadAttr::CpuLimit(AcStateParam { ac_state }) => read_cpu_limit(ac_state.as_index()),
         },
         Args::Write { attr } => match attr {
             WriteAttr::Fan(FanParams { ac_state, speed }) => {
@@ -344,6 +359,9 @@ fn main() {
             }
             WriteAttr::RuntimePm(RuntimePmParams { state }) => write_runtime_pm(state.is_on()),
             WriteAttr::GpuMode(GpuModeParams { mode }) => write_gpu_mode(&mode),
+            WriteAttr::CpuLimit(CpuLimitParams { ac_state, pl1, pl2 }) => {
+                write_cpu_limit(ac_state.as_index(), &pl1, pl2)
+            }
         },
         Args::Effect { effect } => match effect {
             Effect::Static(params) => send_effect(
@@ -830,6 +848,48 @@ fn write_runtime_pm(enabled: bool) {
             } else {
                 eprintln!("Failed to set dGPU runtime PM (permission denied?)");
             }
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn read_cpu_limit(ac: usize) {
+    match send_data(comms::DaemonCommand::GetCpuPowerLimit { ac }) {
+        Some(comms::DaemonResponse::GetCpuPowerLimit { fixed, applied }) => {
+            let source = if fixed.is_some() {
+                "fixed"
+            } else {
+                "following the power mode"
+            };
+            match applied {
+                Some((pl1, pl2)) => {
+                    println!("CPU power limit: PL1 {pl1} W, PL2 {pl2} W ({source})")
+                }
+                None => println!("CPU power limit: not managed"),
+            }
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn write_cpu_limit(ac: usize, pl1: &str, pl2: Option<u32>) {
+    let limit = if pl1 == "auto" {
+        None
+    } else {
+        match pl1.parse::<u32>() {
+            Ok(pl1) => Some((pl1, pl2.unwrap_or(pl1))),
+            Err(_) => {
+                eprintln!("PL1 must be a number of watts or \"auto\"");
+                std::process::exit(1);
+            }
+        }
+    };
+    match send_data(comms::DaemonCommand::SetCpuPowerLimit { ac, limit }) {
+        Some(comms::DaemonResponse::SetCpuPowerLimit { result: true }) => read_cpu_limit(ac),
+        Some(comms::DaemonResponse::SetCpuPowerLimit { result: false }) => {
+            eprintln!("Failed to set CPU power limit (PL1 5-250 W, PL2 at least PL1)")
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),

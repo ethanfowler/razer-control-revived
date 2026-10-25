@@ -55,6 +55,7 @@ impl SettingsRow {
 /// A row specifically designed for sliders/scales that need full width
 pub struct SliderRow {
     pub container: gtk::Box,
+    pub subtitle: gtk::Label,
     pub scale: gtk::Scale,
 }
 
@@ -73,13 +74,12 @@ impl SliderRow {
         container.append(&title_label);
 
         // Subtitle label
-        if !subtitle.is_empty() {
-            let subtitle_label = gtk::Label::new(Some(subtitle));
-            subtitle_label.set_halign(gtk::Align::Start);
-            subtitle_label.add_css_class("dim-label");
-            subtitle_label.add_css_class("caption");
-            container.append(&subtitle_label);
-        }
+        let subtitle_label = gtk::Label::new(Some(subtitle));
+        subtitle_label.set_halign(gtk::Align::Start);
+        subtitle_label.add_css_class("dim-label");
+        subtitle_label.add_css_class("caption");
+        subtitle_label.set_visible(!subtitle.is_empty());
+        container.append(&subtitle_label);
 
         // Scale widget
         let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, step);
@@ -90,7 +90,11 @@ impl SliderRow {
         scale.set_digits(0);
         container.append(&scale);
 
-        SliderRow { container, scale }
+        SliderRow {
+            container,
+            subtitle: subtitle_label,
+            scale,
+        }
     }
 
     pub fn add_mark(&self, value: f64, label: Option<&str>) {

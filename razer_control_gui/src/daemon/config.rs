@@ -15,6 +15,9 @@ pub struct PowerConfig {
     pub logo_state: u8,
     pub screensaver: bool, // turno of keyboard light if screen is blank
     pub idle: u32,
+    /// Fixed CPU power limits, overriding the ones that follow the power mode
+    #[serde(default)]
+    pub cpu_power_limit: Option<CpuPowerLimit>,
 }
 
 impl PowerConfig {
@@ -28,6 +31,7 @@ impl PowerConfig {
             logo_state: 0,
             screensaver: false,
             idle: 0,
+            cpu_power_limit: None,
         }
     }
 }
@@ -72,6 +76,14 @@ impl Default for CpuPowerLimits {
     }
 }
 
+impl CpuPowerLimit {
+    /// Sanity bounds for user-set limits: below 5 W the system crawls, and
+    /// PL2 is a burst allowance on top of PL1.
+    pub fn is_valid(&self) -> bool {
+        (5..=250).contains(&self.pl1) && (self.pl1..=250).contains(&self.pl2)
+    }
+}
+
 impl CpuPowerLimits {
     /// Limits for a power mode (0 Balanced, 1 Gaming, 2 Creator, 3 Silent,
     /// 4 Custom), or None when disabled or the mode is unknown.
@@ -87,6 +99,13 @@ impl CpuPowerLimits {
             4 => self.custom.get(usize::from(cpu_boost)).copied(),
             _ => None,
         }
+    }
+
+    /// Limits for a profile: its fixed limits if set, else the mode's.
+    pub fn for_profile(&self, power: &PowerConfig) -> Option<CpuPowerLimit> {
+        power
+            .cpu_power_limit
+            .or_else(|| self.for_mode(power.power_mode, power.cpu_boost))
     }
 }
 
@@ -198,5 +217,33 @@ mod tests {
         json.as_object_mut().unwrap().remove("cpu_power_limits");
         let config: Configuration = serde_json::from_value(json).unwrap();
         assert_eq!(config.cpu_power_limits, CpuPowerLimits::default());
+    }
+
+    #[test]
+    fn fixed_cpu_power_limit_overrides_the_mode() {
+        let limits = CpuPowerLimits::default();
+        let mut power = PowerConfig::new();
+        power.power_mode = 3;
+        assert_eq!(limits.for_profile(&power), Some(limits.silent));
+        let fixed = CpuPowerLimit { pl1: 15, pl2: 25 };
+        power.cpu_power_limit = Some(fixed);
+        assert_eq!(limits.for_profile(&power), Some(fixed));
+    }
+
+    #[test]
+    fn cpu_power_limit_bounds() {
+        assert!(CpuPowerLimit { pl1: 15, pl2: 25 }.is_valid());
+        assert!(CpuPowerLimit { pl1: 55, pl2: 55 }.is_valid());
+        assert!(!CpuPowerLimit { pl1: 2, pl2: 25 }.is_valid());
+        assert!(!CpuPowerLimit { pl1: 55, pl2: 45 }.is_valid());
+        assert!(!CpuPowerLimit { pl1: 55, pl2: 1000 }.is_valid());
+    }
+
+    #[test]
+    fn profiles_without_fixed_cpu_power_limit_follow_the_mode() {
+        let mut json = serde_json::to_value(PowerConfig::new()).unwrap();
+        json.as_object_mut().unwrap().remove("cpu_power_limit");
+        let power: PowerConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(power.cpu_power_limit, None);
     }
 }

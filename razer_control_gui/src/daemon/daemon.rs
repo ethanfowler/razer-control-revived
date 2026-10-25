@@ -628,6 +628,20 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
             comms::DaemonCommand::GetLiveFanRpm => Some(comms::DaemonResponse::GetLiveFanRpm {
                 rpms: d.get_live_fan_rpms(),
             }),
+            comms::DaemonCommand::SetCpuPowerLimit { ac, limit } if ac < 2 => {
+                let limit = limit.map(|(pl1, pl2)| config::CpuPowerLimit { pl1, pl2 });
+                Some(comms::DaemonResponse::SetCpuPowerLimit {
+                    result: d.set_cpu_power_limit(ac, limit),
+                })
+            }
+            comms::DaemonCommand::GetCpuPowerLimit { ac } if ac < 2 => {
+                let (fixed, applied) = d.get_cpu_power_limit(ac);
+                let watts = |l: config::CpuPowerLimit| (l.pl1, l.pl2);
+                Some(comms::DaemonResponse::GetCpuPowerLimit {
+                    fixed: fixed.map(watts),
+                    applied: applied.map(watts),
+                })
+            }
             comms::DaemonCommand::GetDeviceName => {
                 let name = match &d.device {
                     Some(device) => device.get_name(),

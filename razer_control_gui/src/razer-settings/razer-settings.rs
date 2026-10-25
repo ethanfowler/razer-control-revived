@@ -78,6 +78,91 @@ fn set_gpu_mode(mode: &str) -> Option<(bool, String)> {
     }
 }
 
+/// The profile's fixed CPU power limits (PL1, PL2) and the ones it applies
+type CpuPowerLimitState = (Option<(u32, u32)>, Option<(u32, u32)>);
+
+fn get_cpu_power_limit(ac: bool) -> Option<CpuPowerLimitState> {
+    let response = send_data(comms::DaemonCommand::GetCpuPowerLimit { ac: ac as usize })?;
+    use comms::DaemonResponse::*;
+    match response {
+        GetCpuPowerLimit { fixed, applied } => Some((fixed, applied)),
+        response => {
+            println!("Instead of GetCpuPowerLimit got {response:?}");
+            None
+        }
+    }
+}
+
+fn set_cpu_power_limit(ac: bool, limit: Option<(u32, u32)>) -> Option<bool> {
+    let response = send_data(comms::DaemonCommand::SetCpuPowerLimit {
+        ac: ac as usize,
+        limit,
+    })?;
+    use comms::DaemonResponse::*;
+    match response {
+        SetCpuPowerLimit { result } => Some(result),
+        response => {
+            println!("Instead of SetCpuPowerLimit got {response:?}");
+            None
+        }
+    }
+}
+
+/// Slider notches for a fixed CPU power limit: (PL1, PL2) in watts. Notch 0
+/// is "Auto", which follows the power mode.
+const CPU_LIMIT_NOTCHES: [(u32, u32); 8] = [
+    (15, 25),
+    (25, 45),
+    (35, 65),
+    (45, 90),
+    (55, 115),
+    (80, 157),
+    (100, 160),
+    (120, 160),
+];
+
+/// Slider position for a fixed limit: the notch with the closest PL1
+fn cpu_limit_notch(fixed: Option<(u32, u32)>) -> f64 {
+    let Some((pl1, _)) = fixed else {
+        return 0.0;
+    };
+    let index = CPU_LIMIT_NOTCHES
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, (notch, _))| notch.abs_diff(pl1))
+        .map_or(0, |(i, _)| i);
+    (index + 1) as f64
+}
+
+fn cpu_limit_description(state: Option<CpuPowerLimitState>) -> String {
+    match state {
+        Some((Some((pl1, pl2)), _)) => {
+            format!("Fixed in every power mode: {pl1} W sustained, {pl2} W burst")
+        }
+        Some((None, Some((pl1, pl2)))) => {
+            format!("Auto, following the power mode: {pl1} W sustained, {pl2} W burst")
+        }
+        _ => "Auto, following the power mode".to_string(),
+    }
+}
+
+/// Show a toast in the window containing a widget, or log if there's none
+fn show_toast(widget: &impl IsA<gtk::Widget>, message: &str) {
+    let overlay = widget
+        .root()
+        .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
+        .and_then(|w| w.content())
+        .and_then(|c| c.downcast::<adw::ToastOverlay>().ok());
+    match overlay {
+        Some(overlay) => {
+            let toast = adw::Toast::new(message);
+            toast.set_timeout(4);
+            overlay.add_toast(toast);
+        }
+        None => eprintln!("{}", message),
+    }
+}
+
 fn get_device_name() -> Option<String> {
     let response = send_data(comms::DaemonCommand::GetDeviceName)?;
     use comms::DaemonResponse::*;
@@ -1279,6 +1364,23 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     cpu_combo.set_visible(show_boost);
     gpu_combo.set_visible(show_boost);
 
+    let cpu_limit = get_cpu_power_limit(initial_ac);
+    let cpu_limit_slider = SliderRow::new(
+        "CPU Power Limit",
+        &cpu_limit_description(cpu_limit),
+        0.0,
+        CPU_LIMIT_NOTCHES.len() as f64,
+        1.0,
+        cpu_limit_notch(cpu_limit.and_then(|l| l.0)),
+    );
+    cpu_limit_slider.scale.set_round_digits(0);
+    cpu_limit_slider.scale.set_draw_value(false);
+    cpu_limit_slider.add_mark(0.0, Some("Auto"));
+    for (i, (pl1, _)) in CPU_LIMIT_NOTCHES.iter().enumerate() {
+        cpu_limit_slider.add_mark((i + 1) as f64, Some(&format!("{pl1} W")));
+    }
+    power_section.add_row(&cpu_limit_slider.container);
+
     // --- Cooling section ---
     let fan_section = settings_page.add_section(Some("Cooling"));
 
@@ -1323,9 +1425,14 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let fan_switch = fan_switch.clone();
         let fan_scale = fan_slider.scale.clone();
         let min_fan = min_fan_speed;
+        let cpu_limit_scale = cpu_limit_slider.scale.clone();
+        let cpu_limit_subtitle = cpu_limit_slider.subtitle.clone();
         move || {
             refreshing.set(true);
             let ac = is_ac.get();
+            let cpu_limit = get_cpu_power_limit(ac);
+            cpu_limit_scale.set_value(cpu_limit_notch(cpu_limit.and_then(|l| l.0)));
+            cpu_limit_subtitle.set_label(&cpu_limit_description(cpu_limit));
             if let Some(pwr) = get_power(ac) {
                 power_combo.set_selected(pwr.0 as u32);
                 power_combo.set_subtitle(profile_description(pwr.0 as u32));
@@ -1446,6 +1553,27 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
                 set_power(ac, (profile, cpu, gpu));
             }
         ));
+    }
+
+    // CPU power limit: notch 0 follows the power mode, the rest fix the limit
+    {
+        let is_ac = is_ac.clone();
+        let refreshing = refreshing.clone();
+        let subtitle = cpu_limit_slider.subtitle.clone();
+        cpu_limit_slider.scale.connect_value_changed(move |sc| {
+            if refreshing.get() {
+                return;
+            }
+            let ac = is_ac.get();
+            let notch = sc.value().round() as usize;
+            let limit = notch
+                .checked_sub(1)
+                .and_then(|i| CPU_LIMIT_NOTCHES.get(i).copied());
+            if set_cpu_power_limit(ac, limit) != Some(true) {
+                show_toast(sc, "Failed to set the CPU power limit");
+            }
+            subtitle.set_label(&cpu_limit_description(get_cpu_power_limit(ac)));
+        });
     }
 
     // Fan control callbacks
