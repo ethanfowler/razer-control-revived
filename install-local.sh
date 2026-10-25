@@ -17,12 +17,11 @@ RAZER_SETTINGS_BIN="$BUILD_DIR/target/release/razer-settings"
 RAZER_DAEMON_BIN="$BUILD_DIR/target/release/daemon"
 RAZER_CLI_BIN="$BUILD_DIR/target/release/razer-cli"
 
-if [ -f "$RAZER_SETTINGS_BIN" ] && [ -f "$RAZER_DAEMON_BIN" ] && [ -f "$RAZER_CLI_BIN" ]; then
-    echo "Release binaries found, skipping build."
-else
-    echo "Release binaries missing, building with cargo..."
-    cargo build --release --manifest-path "$BUILD_DIR/Cargo.toml"
-fi
+# Always build: cargo only rebuilds what changed, and skipping the build when
+# binaries exist would install stale ones.
+CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
+echo "Building release binaries..."
+"$CARGO" build --release --manifest-path "$BUILD_DIR/Cargo.toml"
 
 # Install binaries (consistent with deb/rpm package names)
 echo "Installing binaries to /usr/bin..."
@@ -103,3 +102,13 @@ fi
 
 echo ""
 echo "Installation complete!"
+
+# The user service manager only picks up new groups when it restarts, which
+# needs every session for this user to end (a reboot is the simplest way).
+USER_MANAGER_PID="$(pgrep -u "$USER" -x systemd | head -n1)"
+RAZERCONTROL_GID="$(getent group razercontrol | cut -d: -f3)"
+if [ -n "$USER_MANAGER_PID" ] && ! grep -qw "$RAZERCONTROL_GID" <(grep '^Groups:' "/proc/$USER_MANAGER_PID/status"); then
+    echo ""
+    echo "NOTE: reboot (or log out of every session) once so the daemon gets the"
+    echo "razercontrol group. Until then, CPU power limits and turbo can't be changed."
+fi
