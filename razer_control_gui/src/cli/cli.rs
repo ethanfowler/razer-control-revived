@@ -69,6 +69,8 @@ enum ReadAttr {
     Gpu,
     /// Read the CPU power limits for a profile
     CpuLimit(AcStateParam),
+    /// Read whether NVIDIA Dynamic Boost (nvidia-powerd) is running
+    DynamicBoost,
 }
 
 #[derive(Subcommand)]
@@ -91,6 +93,8 @@ enum WriteAttr {
     GpuMode(GpuModeParams),
     /// Fix the CPU power limits for a profile, or follow the power mode
     CpuLimit(CpuLimitParams),
+    /// Start or stop NVIDIA Dynamic Boost (nvidia-powerd)
+    DynamicBoost(DynamicBoostParams),
 }
 
 #[derive(Parser)]
@@ -161,6 +165,11 @@ struct CpuLimitParams {
     pl1: String,
     /// burst limit (PL2) in watts; defaults to PL1
     pl2: Option<u32>,
+}
+
+#[derive(Parser)]
+struct DynamicBoostParams {
+    state: OnOff,
 }
 
 #[derive(ValueEnum, Clone)]
@@ -334,6 +343,7 @@ fn main() {
             ReadAttr::FanRpm => read_actual_fan_rpm(),
             ReadAttr::Gpu => read_gpu_status(),
             ReadAttr::CpuLimit(AcStateParam { ac_state }) => read_cpu_limit(ac_state.as_index()),
+            ReadAttr::DynamicBoost => read_dynamic_boost(),
         },
         Args::Write { attr } => match attr {
             WriteAttr::Fan(FanParams { ac_state, speed }) => {
@@ -361,6 +371,9 @@ fn main() {
             WriteAttr::GpuMode(GpuModeParams { mode }) => write_gpu_mode(&mode),
             WriteAttr::CpuLimit(CpuLimitParams { ac_state, pl1, pl2 }) => {
                 write_cpu_limit(ac_state.as_index(), &pl1, pl2)
+            }
+            WriteAttr::DynamicBoost(DynamicBoostParams { state }) => {
+                write_dynamic_boost(state.is_on())
             }
         },
         Args::Effect { effect } => match effect {
@@ -890,6 +903,35 @@ fn write_cpu_limit(ac: usize, pl1: &str, pl2: Option<u32>) {
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: true }) => read_cpu_limit(ac),
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: false }) => {
             eprintln!("Failed to set CPU power limit (PL1 5-250 W, PL2 at least PL1)")
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn read_dynamic_boost() {
+    match send_data(comms::DaemonCommand::GetNvidiaPowerd) {
+        Some(comms::DaemonResponse::GetNvidiaPowerd {
+            available: false, ..
+        }) => {
+            println!("Dynamic Boost: nvidia-powerd is not installed")
+        }
+        Some(comms::DaemonResponse::GetNvidiaPowerd { active, .. }) => {
+            println!("Dynamic Boost: {}", if active { "on" } else { "off" })
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn write_dynamic_boost(enabled: bool) {
+    match send_data(comms::DaemonCommand::SetNvidiaPowerd { enabled }) {
+        Some(comms::DaemonResponse::SetNvidiaPowerd { result, message }) => {
+            if result {
+                println!("{}", message);
+            } else {
+                eprintln!("{}", message);
+            }
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),

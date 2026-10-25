@@ -371,6 +371,19 @@ impl DeviceManager {
         true
     }
 
+    pub fn get_nvidia_powerd_preference(&mut self) -> Option<bool> {
+        self.get_config().and_then(|config| config.nvidia_powerd)
+    }
+
+    pub fn set_nvidia_powerd_preference(&mut self, enabled: bool) {
+        if let Some(config) = self.get_config() {
+            config.nvidia_powerd = Some(enabled);
+            if let Err(e) = config.write_to_file() {
+                eprintln!("Error write config {:?}", e);
+            }
+        }
+    }
+
     /// The profile's fixed CPU power limits, and the limits it applies
     pub fn get_cpu_power_limit(
         &mut self,

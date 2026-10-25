@@ -108,6 +108,31 @@ fn set_cpu_power_limit(ac: bool, limit: Option<(u32, u32)>) -> Option<bool> {
     }
 }
 
+/// Whether nvidia-powerd is (installed, running)
+fn get_nvidia_powerd() -> Option<(bool, bool)> {
+    let response = send_data(comms::DaemonCommand::GetNvidiaPowerd)?;
+    use comms::DaemonResponse::*;
+    match response {
+        GetNvidiaPowerd { available, active } => Some((available, active)),
+        response => {
+            println!("Instead of GetNvidiaPowerd got {response:?}");
+            None
+        }
+    }
+}
+
+fn set_nvidia_powerd(enabled: bool) -> Option<(bool, String)> {
+    let response = send_data(comms::DaemonCommand::SetNvidiaPowerd { enabled })?;
+    use comms::DaemonResponse::*;
+    match response {
+        SetNvidiaPowerd { result, message } => Some((result, message)),
+        response => {
+            println!("Instead of SetNvidiaPowerd got {response:?}");
+            None
+        }
+    }
+}
+
 /// Slider notches for a fixed CPU power limit: (PL1, PL2) in watts. Notch 0
 /// is "Auto", which follows the power mode.
 const CPU_LIMIT_NOTCHES: [(u32, u32); 8] = [
@@ -1688,6 +1713,40 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         });
     }
 
+    // --- NVIDIA Dynamic Boost (nvidia-powerd) ---
+    let powerd = get_nvidia_powerd();
+    let boost_switch = if has_dgpu && powerd.is_some_and(|(available, _)| available) {
+        let boost_section = settings_page.add_section(Some("GPU Power"));
+        let switch = make_switch_row(
+            "Dynamic Boost",
+            "Run nvidia-powerd, which raises the GPU power limit per power mode. Off keeps the base limit and is quieter",
+            powerd.is_some_and(|(_, active)| active),
+        );
+        boost_section.add_row(&switch);
+
+        let gpu_refreshing = gpu_refreshing.clone();
+        let gpu_cooldown = gpu_cooldown.clone();
+        switch.connect_active_notify(move |sw| {
+            if gpu_refreshing.get() {
+                return;
+            }
+            let enabled = sw.is_active();
+            match set_nvidia_powerd(enabled) {
+                Some((true, _)) => {}
+                Some((false, msg)) => show_toast(sw, &msg),
+                None => show_toast(sw, "Failed to communicate with daemon"),
+            }
+            gpu_cooldown.set(true);
+            let cd = gpu_cooldown.clone();
+            glib::timeout_add_local_once(Duration::from_secs(4), move || {
+                cd.set(false);
+            });
+        });
+        Some(switch)
+    } else {
+        None
+    };
+
     // --- envycontrol GPU Mode ---
     let ec_available = gpu_status.as_ref().is_some_and(|(_, _, _, avail)| *avail);
     let ec_mode = gpu_status
@@ -1807,6 +1866,11 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
             {
                 gpu_refreshing.set(true);
                 rpm_switch.set_active(dgpu_rpm);
+                if let Some(ref boost_switch) = boost_switch
+                    && let Some((_, active)) = get_nvidia_powerd()
+                {
+                    boost_switch.set_active(active);
+                }
                 for (i, row) in gpu_rows.iter().enumerate() {
                     if let Some(gpu) = gpus.get(i) {
                         let type_label = if gpu.gpu_type == "dgpu" {

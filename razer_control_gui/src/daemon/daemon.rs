@@ -21,6 +21,7 @@ mod device;
 mod gpu;
 mod kbd;
 mod login1;
+mod nvidia_powerd;
 mod powercap;
 mod screensaver;
 mod thermal;
@@ -78,6 +79,9 @@ fn main() {
         if let Ok(online) = proxy_ac.online() {
             println!("Online AC0: {:?}", online);
             d.set_ac_state(online);
+            if let Some(enabled) = d.get_nvidia_powerd_preference() {
+                thread::spawn(move || nvidia_powerd::ensure(enabled));
+            }
             d.restore_standard_effect();
             d.restore_bho();
             // Only load per-key RGB effects if device supports custom frames.
@@ -451,6 +455,37 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
             return Some(comms::DaemonResponse::SetGpuMode {
                 result: ok,
                 message: msg,
+            });
+        }
+        comms::DaemonCommand::GetNvidiaPowerd => {
+            return Some(comms::DaemonResponse::GetNvidiaPowerd {
+                available: nvidia_powerd::available(),
+                active: nvidia_powerd::is_active(),
+            });
+        }
+        comms::DaemonCommand::SetNvidiaPowerd { enabled } => {
+            if !nvidia_powerd::available() {
+                return Some(comms::DaemonResponse::SetNvidiaPowerd {
+                    result: false,
+                    message: "nvidia-powerd is not installed".to_string(),
+                });
+            }
+            // systemctl can wait on a polkit dialog, so don't hold up the
+            // client or the device lock; clients poll GetNvidiaPowerd.
+            let enabled = *enabled;
+            thread::spawn(move || {
+                if nvidia_powerd::set(enabled).0
+                    && let Ok(mut d) = DEV_MANAGER.lock()
+                {
+                    d.set_nvidia_powerd_preference(enabled);
+                }
+            });
+            return Some(comms::DaemonResponse::SetNvidiaPowerd {
+                result: true,
+                message: format!(
+                    "Turning Dynamic Boost {}",
+                    if enabled { "on" } else { "off" }
+                ),
             });
         }
         _ => {}

@@ -126,6 +126,9 @@ pub struct Configuration {
     pub gui_effect_params: Vec<u8>, // GUI effect color params (RGB bytes)
     #[serde(default)]
     pub cpu_power_limits: CpuPowerLimits,
+    /// Run nvidia-powerd (Dynamic Boost); None leaves the service alone
+    #[serde(default)]
+    pub nvidia_powerd: Option<bool>,
 }
 
 fn default_bho_threshold() -> u8 {
@@ -145,6 +148,7 @@ impl Configuration {
             gui_effect: 0,
             gui_effect_params: vec![],
             cpu_power_limits: CpuPowerLimits::default(),
+            nvidia_powerd: None,
         }
     }
 

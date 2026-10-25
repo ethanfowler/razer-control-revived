@@ -48,6 +48,8 @@ sudo usermod -aG razercontrol "$USER"
 sudo install -Dm644 "$BUILD_DIR/data/udev/70-razercontrol-powercap.rules" /etc/udev/rules.d/70-razercontrol-powercap.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=powercap
+# nvidia-powerd (Dynamic Boost): the razercontrol group may start and stop it
+sudo install -Dm644 "$BUILD_DIR/data/polkit/70-razercontrol-nvidia-powerd.rules" /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
 
 # Install systemd user service
 echo "Installing systemd user service..."

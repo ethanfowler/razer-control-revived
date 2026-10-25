@@ -106,6 +106,10 @@ pub enum DaemonCommand {
     GetCpuPowerLimit {
         ac: usize,
     },
+    SetNvidiaPowerd {
+        enabled: bool,
+    },
+    GetNvidiaPowerd,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -203,6 +207,14 @@ pub enum DaemonResponse {
         fixed: Option<(u32, u32)>,
         /// What the profile applies: the fixed limits or the mode's
         applied: Option<(u32, u32)>,
+    },
+    SetNvidiaPowerd {
+        result: bool,
+        message: String,
+    },
+    GetNvidiaPowerd {
+        available: bool,
+        active: bool,
     },
 }
 
