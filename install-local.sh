@@ -49,6 +49,27 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=powercap
 # nvidia-powerd (Dynamic Boost): the razercontrol group may start and stop it
 sudo install -Dm644 "$BUILD_DIR/data/polkit/70-razercontrol-nvidia-powerd.rules" /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
+# Optional: Ubuntu and others ship nvidia-powerd (Dynamic Boost) but leave its
+# service and D-Bus policy as examples under /usr/share/doc. Install NVIDIA's
+# own copies so the Dynamic Boost toggle can work. An existing unit is left
+# alone, the service isn't enabled (the toggle decides), and failures only warn.
+install_nvidia_powerd() {
+    [ -x /usr/bin/nvidia-powerd ] || return 0
+    [ "$(systemctl show -p LoadState --value nvidia-powerd.service)" = loaded ] && return 0
+    local unit dbus_conf
+    unit="$(ls -1 /usr/share/doc/nvidia-*/nvidia-powerd.service 2>/dev/null | sort -V | tail -n1)"
+    dbus_conf="$(ls -1 /usr/share/doc/nvidia-*/nvidia-dbus.conf 2>/dev/null | sort -V | tail -n1)"
+    if [ -z "$unit" ] || [ -z "$dbus_conf" ]; then
+        echo "nvidia-powerd has no service files to install; Dynamic Boost will be unavailable"
+        return 0
+    fi
+    echo "Setting up nvidia-powerd (Dynamic Boost, left disabled)..."
+    sudo install -Dm644 "$dbus_conf" /etc/dbus-1/system.d/nvidia-dbus.conf &&
+        sudo install -Dm644 "$unit" /etc/systemd/system/nvidia-powerd.service &&
+        sudo systemctl daemon-reload &&
+        sudo systemctl reload dbus
+}
+install_nvidia_powerd || echo "WARNING: couldn't set up nvidia-powerd; Dynamic Boost will be unavailable"
 # CPU turbo: the razercontrol group may switch it
 sudo install -Dm644 "$BUILD_DIR/data/tmpfiles/razercontrol.conf" /etc/tmpfiles.d/razercontrol.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/razercontrol.conf
