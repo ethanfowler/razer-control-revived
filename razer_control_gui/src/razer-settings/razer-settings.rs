@@ -136,6 +136,62 @@ fn set_turbo(ac: bool, enabled: bool) -> Option<bool> {
     }
 }
 
+/// A profile's GPU clock caps (graphics, memory) and the supported memory clocks
+type GpuClockState = (Option<u32>, Option<u32>, Vec<u32>);
+
+fn get_gpu_clock_limit(ac: bool) -> Option<GpuClockState> {
+    let response = send_data(comms::DaemonCommand::GetGpuClockLimit { ac: ac as usize })?;
+    use comms::DaemonResponse::*;
+    match response {
+        GetGpuClockLimit {
+            graphics,
+            memory,
+            memory_clocks,
+        } => Some((graphics, memory, memory_clocks)),
+        response => {
+            println!("Instead of GetGpuClockLimit got {response:?}");
+            None
+        }
+    }
+}
+
+fn set_gpu_clock_limit(ac: bool, graphics: Option<u32>, memory: Option<u32>) -> Option<bool> {
+    let response = send_data(comms::DaemonCommand::SetGpuClockLimit {
+        ac: ac as usize,
+        graphics,
+        memory,
+    })?;
+    use comms::DaemonResponse::*;
+    match response {
+        SetGpuClockLimit { result } => Some(result),
+        response => {
+            println!("Instead of SetGpuClockLimit got {response:?}");
+            None
+        }
+    }
+}
+
+/// Graphics clock caps offered in the GUI, in MHz
+const GPU_GRAPHICS_CAPS: [u32; 7] = [600, 900, 1200, 1500, 1800, 2100, 2400];
+
+/// Combo position for a cap: 0 is "No limit", else the closest option
+fn clock_cap_index(cap: Option<u32>, options: &[u32]) -> u32 {
+    let Some(cap) = cap else {
+        return 0;
+    };
+    options
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, mhz)| mhz.abs_diff(cap))
+        .map_or(0, |(i, _)| i as u32 + 1)
+}
+
+fn clock_cap_labels(options: &[u32]) -> Vec<String> {
+    std::iter::once("No limit".to_string())
+        .chain(options.iter().map(|mhz| format!("{mhz} MHz")))
+        .collect()
+}
+
 /// Whether nvidia-powerd is (installed, running)
 fn get_nvidia_powerd() -> Option<(bool, bool)> {
     let response = send_data(comms::DaemonCommand::GetNvidiaPowerd)?;
@@ -1443,6 +1499,34 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     }
     power_section.add_row(&cpu_limit_slider.container);
 
+    // GPU clock caps: built here so the page refresh can update them, and
+    // added to the GPU Power section further down
+    let gpu_clocks = get_gpu_clock_limit(initial_ac);
+    // The top memory clock is the uncapped state, so it isn't offered as a cap
+    let memory_caps: Rc<Vec<u32>> = Rc::new(
+        gpu_clocks
+            .as_ref()
+            .map(|(_, _, clocks)| clocks.iter().skip(1).copied().collect())
+            .unwrap_or_default(),
+    );
+    let graphics_labels = clock_cap_labels(&GPU_GRAPHICS_CAPS);
+    let graphics_cap_combo = make_combo_row(
+        "Graphics Clock Limit",
+        "Cap the GPU core clock. Lower runs cooler and quieter",
+        &graphics_labels
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        clock_cap_index(gpu_clocks.as_ref().and_then(|c| c.0), &GPU_GRAPHICS_CAPS),
+    );
+    let memory_labels = clock_cap_labels(&memory_caps);
+    let memory_cap_combo = make_combo_row(
+        "Memory Clock Limit",
+        "Cap the video memory clock. Saves power even at light load",
+        &memory_labels.iter().map(String::as_str).collect::<Vec<_>>(),
+        clock_cap_index(gpu_clocks.as_ref().and_then(|c| c.1), &memory_caps),
+    );
+
     // --- Cooling section ---
     let fan_section = settings_page.add_section(Some("Cooling"));
 
@@ -1490,9 +1574,16 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let cpu_limit_scale = cpu_limit_slider.scale.clone();
         let cpu_limit_subtitle = cpu_limit_slider.subtitle.clone();
         let turbo_switch = turbo_switch.clone();
+        let graphics_cap_combo = graphics_cap_combo.clone();
+        let memory_cap_combo = memory_cap_combo.clone();
+        let memory_caps = memory_caps.clone();
         move || {
             refreshing.set(true);
             let ac = is_ac.get();
+            if let Some((graphics, memory, _)) = get_gpu_clock_limit(ac) {
+                graphics_cap_combo.set_selected(clock_cap_index(graphics, &GPU_GRAPHICS_CAPS));
+                memory_cap_combo.set_selected(clock_cap_index(memory, &memory_caps));
+            }
             if let Some((_, enabled)) = get_turbo(ac) {
                 turbo_switch.set_active(enabled);
             }
@@ -1634,6 +1725,38 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         });
     }
 
+    // GPU clock caps: either combo sends both
+    {
+        let apply_gpu_clocks = {
+            let is_ac = is_ac.clone();
+            let refreshing = refreshing.clone();
+            let graphics_cap_combo = graphics_cap_combo.clone();
+            let memory_cap_combo = memory_cap_combo.clone();
+            let memory_caps = memory_caps.clone();
+            Rc::new(move || {
+                if refreshing.get() {
+                    return;
+                }
+                let pick = |combo: &adw::ComboRow, options: &[u32]| {
+                    (combo.selected() as usize)
+                        .checked_sub(1)
+                        .and_then(|i| options.get(i).copied())
+                };
+                let graphics = pick(&graphics_cap_combo, &GPU_GRAPHICS_CAPS);
+                let memory = pick(&memory_cap_combo, &memory_caps);
+                if set_gpu_clock_limit(is_ac.get(), graphics, memory) != Some(true) {
+                    show_toast(
+                        &graphics_cap_combo,
+                        "Failed to set GPU clock limits (is the helper installed?)",
+                    );
+                }
+            })
+        };
+        let apply = apply_gpu_clocks.clone();
+        graphics_cap_combo.connect_selected_notify(move |_| apply());
+        memory_cap_combo.connect_selected_notify(move |_| apply_gpu_clocks());
+    }
+
     // CPU power limit: notch 0 follows the power mode, the rest fix the limit
     {
         let is_ac = is_ac.clone();
@@ -1769,8 +1892,19 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
 
     // --- NVIDIA Dynamic Boost (nvidia-powerd) ---
     let powerd = get_nvidia_powerd();
-    let boost_switch = if has_dgpu && powerd.is_some_and(|(available, _)| available) {
-        let boost_section = settings_page.add_section(Some("GPU Power"));
+    let has_gpu_clocks = !memory_caps.is_empty();
+    let gpu_power_section =
+        (has_dgpu || has_gpu_clocks).then(|| settings_page.add_section(Some("GPU Power")));
+    if let Some(ref section) = gpu_power_section
+        && has_gpu_clocks
+    {
+        section.add_row(&graphics_cap_combo);
+        section.add_row(&memory_cap_combo);
+    }
+    let boost_switch = if let Some(ref boost_section) = gpu_power_section
+        && has_dgpu
+        && powerd.is_some_and(|(available, _)| available)
+    {
         let switch = make_switch_row(
             "Dynamic Boost",
             "Run nvidia-powerd, which raises the GPU power limit per power mode. Off keeps the base limit and is quieter",

@@ -117,6 +117,15 @@ pub enum DaemonCommand {
     GetTurbo {
         ac: usize,
     },
+    SetGpuClockLimit {
+        ac: usize,
+        /// Upper bounds in MHz; None unlocks that clock
+        graphics: Option<u32>,
+        memory: Option<u32>,
+    },
+    GetGpuClockLimit {
+        ac: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -230,6 +239,15 @@ pub enum DaemonResponse {
         /// Whether turbo can be controlled at all
         available: bool,
         enabled: bool,
+    },
+    SetGpuClockLimit {
+        result: bool,
+    },
+    GetGpuClockLimit {
+        graphics: Option<u32>,
+        memory: Option<u32>,
+        /// Memory clocks the GPU supports in MHz, highest first
+        memory_clocks: Vec<u32>,
     },
 }
 

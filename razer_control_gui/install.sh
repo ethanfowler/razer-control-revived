@@ -40,6 +40,7 @@ install() {
     sudo bash <<EOF
         mkdir -p /usr/share/razercontrol
         cp target/release/razer-cli /usr/bin/
+        install -Dm755 target/release/razer-gpu-clocks /usr/libexec/razercontrol/razer-gpu-clocks
         cp target/release/daemon /usr/bin/razer-daemon
         cp data/devices/laptops.json /usr/share/razercontrol/
         rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
@@ -51,6 +52,8 @@ install() {
         udevadm trigger --subsystem-match=powercap
         install -Dm644 data/polkit/70-razercontrol-nvidia-powerd.rules /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
         install -Dm644 data/tmpfiles/razercontrol.conf /etc/tmpfiles.d/razercontrol.conf
+        install -Dm644 data/polkit/com.github.encomjp.razercontrol.gpu-clocks.policy /usr/share/polkit-1/actions/com.github.encomjp.razercontrol.gpu-clocks.policy
+        install -Dm644 data/polkit/70-razercontrol-gpu-clocks.rules /etc/polkit-1/rules.d/70-razercontrol-gpu-clocks.rules
         systemd-tmpfiles --create /etc/tmpfiles.d/razercontrol.conf
 EOF
 
@@ -114,6 +117,9 @@ uninstall() {
         rm -f /etc/udev/rules.d/70-razercontrol-powercap.rules
         rm -f /etc/polkit-1/rules.d/70-razercontrol-nvidia-powerd.rules
         rm -f /etc/tmpfiles.d/razercontrol.conf
+        rm -f /usr/libexec/razercontrol/razer-gpu-clocks
+        rm -f /usr/share/polkit-1/actions/com.github.encomjp.razercontrol.gpu-clocks.policy
+        rm -f /etc/polkit-1/rules.d/70-razercontrol-gpu-clocks.rules
         udevadm control --reload-rules
 EOF
 

@@ -19,6 +19,7 @@ mod dbus_mutter_displayconfig;
 mod dbus_mutter_idlemonitor;
 mod device;
 mod gpu;
+mod gpu_clocks;
 mod kbd;
 mod login1;
 mod nvidia_powerd;
@@ -357,6 +358,7 @@ fn start_battery_monitor_task() -> JoinHandle<()> {
                             thread::sleep(time::Duration::from_secs(3));
                             if let Ok(mut dev) = DEV_MANAGER.lock() {
                                 println!("Delayed AC state check after wake");
+                                dev.forget_gpu_clocks();
                                 dev.set_ac_state_get();
                             }
                         });
@@ -676,6 +678,21 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                 Some(comms::DaemonResponse::GetCpuPowerLimit {
                     fixed: fixed.map(watts),
                     applied: applied.map(watts),
+                })
+            }
+            comms::DaemonCommand::SetGpuClockLimit {
+                ac,
+                graphics,
+                memory,
+            } if ac < 2 => Some(comms::DaemonResponse::SetGpuClockLimit {
+                result: d.set_gpu_clock_limit(ac, config::GpuClockLimit { graphics, memory }),
+            }),
+            comms::DaemonCommand::GetGpuClockLimit { ac } if ac < 2 => {
+                let limit = d.get_gpu_clock_limit(ac);
+                Some(comms::DaemonResponse::GetGpuClockLimit {
+                    graphics: limit.graphics,
+                    memory: limit.memory,
+                    memory_clocks: gpu_clocks::supported_memory_clocks(),
                 })
             }
             comms::DaemonCommand::SetTurbo { ac, enabled } if ac < 2 => {

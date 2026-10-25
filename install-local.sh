@@ -16,6 +16,7 @@ echo "Installing razercontrol-revived..."
 RAZER_SETTINGS_BIN="$BUILD_DIR/target/release/razer-settings"
 RAZER_DAEMON_BIN="$BUILD_DIR/target/release/daemon"
 RAZER_CLI_BIN="$BUILD_DIR/target/release/razer-cli"
+RAZER_GPU_CLOCKS_BIN="$BUILD_DIR/target/release/razer-gpu-clocks"
 
 # Always build: cargo only rebuilds what changed, and skipping the build when
 # binaries exist would install stale ones.
@@ -28,6 +29,8 @@ echo "Installing binaries to /usr/bin..."
 sudo install -Dm755 "$RAZER_SETTINGS_BIN" /usr/bin/razer-settings
 sudo install -Dm755 "$RAZER_DAEMON_BIN" /usr/bin/razer-daemon
 sudo install -Dm755 "$RAZER_CLI_BIN" /usr/bin/razer-cli
+# Root helper for GPU clock caps, run by the daemon through pkexec
+sudo install -Dm755 "$RAZER_GPU_CLOCKS_BIN" /usr/libexec/razercontrol/razer-gpu-clocks
 
 # Install desktop file
 echo "Installing desktop entry..."
@@ -70,6 +73,9 @@ install_nvidia_powerd() {
         sudo systemctl reload dbus
 }
 install_nvidia_powerd || echo "WARNING: couldn't set up nvidia-powerd; Dynamic Boost will be unavailable"
+# GPU clock caps: the razercontrol group may run the helper without a password
+sudo install -Dm644 "$BUILD_DIR/data/polkit/com.github.encomjp.razercontrol.gpu-clocks.policy" /usr/share/polkit-1/actions/com.github.encomjp.razercontrol.gpu-clocks.policy
+sudo install -Dm644 "$BUILD_DIR/data/polkit/70-razercontrol-gpu-clocks.rules" /etc/polkit-1/rules.d/70-razercontrol-gpu-clocks.rules
 # CPU turbo: the razercontrol group may switch it
 sudo install -Dm644 "$BUILD_DIR/data/tmpfiles/razercontrol.conf" /etc/tmpfiles.d/razercontrol.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/razercontrol.conf

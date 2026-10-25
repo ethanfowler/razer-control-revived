@@ -18,6 +18,10 @@ name = "daemon"
 path = "src/daemon/daemon.rs"
 
 [[bin]]
+name = "razer-gpu-clocks"
+path = "src/gpu-clocks/gpu-clocks.rs"
+
+[[bin]]
 name = "razer-settings"
 path = "src/razer-settings/razer-settings.rs"
 required-features = ["gui"]

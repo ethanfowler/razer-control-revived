@@ -21,6 +21,15 @@ pub struct PowerConfig {
     /// CPU turbo boost; None leaves it as it is
     #[serde(default)]
     pub turbo: Option<bool>,
+    #[serde(default)]
+    pub gpu_clock_limit: GpuClockLimit,
+}
+
+/// Upper bounds for the NVIDIA GPU clocks in MHz; None leaves a clock unlocked.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq)]
+pub struct GpuClockLimit {
+    pub graphics: Option<u32>,
+    pub memory: Option<u32>,
 }
 
 impl PowerConfig {
@@ -36,6 +45,7 @@ impl PowerConfig {
             idle: 0,
             cpu_power_limit: None,
             turbo: None,
+            gpu_clock_limit: GpuClockLimit::default(),
         }
     }
 }

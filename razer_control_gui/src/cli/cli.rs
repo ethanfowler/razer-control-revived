@@ -73,6 +73,8 @@ enum ReadAttr {
     DynamicBoost,
     /// Read whether CPU turbo boost is on for a profile
     Turbo(AcStateParam),
+    /// Read the GPU clock limits for a profile
+    GpuClocks(AcStateParam),
 }
 
 #[derive(Subcommand)]
@@ -99,6 +101,8 @@ enum WriteAttr {
     DynamicBoost(DynamicBoostParams),
     /// Switch CPU turbo boost for a profile
     Turbo(TurboParams),
+    /// Cap the GPU graphics and memory clocks for a profile
+    GpuClocks(GpuClocksParams),
 }
 
 #[derive(Parser)]
@@ -181,6 +185,16 @@ struct TurboParams {
     /// battery/plugged in
     ac_state: AcState,
     state: OnOff,
+}
+
+#[derive(Parser)]
+struct GpuClocksParams {
+    /// battery/plugged in
+    ac_state: AcState,
+    /// graphics clock limit in MHz, or "off"
+    graphics: String,
+    /// memory clock limit in MHz, or "off"
+    memory: String,
 }
 
 #[derive(ValueEnum, Clone)]
@@ -356,6 +370,7 @@ fn main() {
             ReadAttr::CpuLimit(AcStateParam { ac_state }) => read_cpu_limit(ac_state.as_index()),
             ReadAttr::DynamicBoost => read_dynamic_boost(),
             ReadAttr::Turbo(AcStateParam { ac_state }) => read_turbo(ac_state.as_index()),
+            ReadAttr::GpuClocks(AcStateParam { ac_state }) => read_gpu_clocks(ac_state.as_index()),
         },
         Args::Write { attr } => match attr {
             WriteAttr::Fan(FanParams { ac_state, speed }) => {
@@ -384,6 +399,11 @@ fn main() {
             WriteAttr::CpuLimit(CpuLimitParams { ac_state, pl1, pl2 }) => {
                 write_cpu_limit(ac_state.as_index(), &pl1, pl2)
             }
+            WriteAttr::GpuClocks(GpuClocksParams {
+                ac_state,
+                graphics,
+                memory,
+            }) => write_gpu_clocks(ac_state.as_index(), &graphics, &memory),
             WriteAttr::Turbo(TurboParams { ac_state, state }) => {
                 write_turbo(ac_state.as_index(), state.is_on())
             }
@@ -918,6 +938,53 @@ fn write_cpu_limit(ac: usize, pl1: &str, pl2: Option<u32>) {
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: true }) => read_cpu_limit(ac),
         Some(comms::DaemonResponse::SetCpuPowerLimit { result: false }) => {
             eprintln!("Failed to set CPU power limit (PL1 5-250 W, PL2 at least PL1)")
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn read_gpu_clocks(ac: usize) {
+    match send_data(comms::DaemonCommand::GetGpuClockLimit { ac }) {
+        Some(comms::DaemonResponse::GetGpuClockLimit {
+            graphics, memory, ..
+        }) => {
+            let show =
+                |cap: Option<u32>| cap.map_or("no limit".to_string(), |mhz| format!("{mhz} MHz"));
+            println!("GPU graphics clock: {}", show(graphics));
+            println!("GPU memory clock: {}", show(memory));
+        }
+        Some(_) => eprintln!("Daemon responded with invalid data!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn parse_clock_cap(arg: &str) -> Option<u32> {
+    if arg == "off" {
+        return None;
+    }
+    match arg.parse::<u32>() {
+        Ok(mhz) if mhz > 0 => Some(mhz),
+        _ => {
+            eprintln!("Clock limits must be a number of MHz or \"off\"");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn write_gpu_clocks(ac: usize, graphics: &str, memory: &str) {
+    let graphics = parse_clock_cap(graphics);
+    let memory = parse_clock_cap(memory);
+    match send_data(comms::DaemonCommand::SetGpuClockLimit {
+        ac,
+        graphics,
+        memory,
+    }) {
+        Some(comms::DaemonResponse::SetGpuClockLimit { result: true }) => read_gpu_clocks(ac),
+        Some(comms::DaemonResponse::SetGpuClockLimit { result: false }) => {
+            eprintln!(
+                "Failed to set GPU clock limits (is the helper and its polkit rule installed?)"
+            )
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),

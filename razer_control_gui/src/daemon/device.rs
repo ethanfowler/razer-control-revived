@@ -1,8 +1,9 @@
 // mod kbd;
 use crate::battery;
 use crate::config;
-use crate::config::CpuPowerLimit;
+use crate::config::{CpuPowerLimit, GpuClockLimit};
 use crate::dbus_mutter_idlemonitor;
+use crate::gpu_clocks;
 use crate::powercap;
 use crate::turbo;
 use dbus::blocking::Connection;
@@ -10,6 +11,7 @@ use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use std::ffi::CString;
+use std::time::Duration;
 use std::{fs, io, thread, time};
 
 const RAZER_VENDOR_ID: u16 = 0x1532;
@@ -89,6 +91,8 @@ pub struct DeviceManager {
     pub active_id: u32,
     add_active: bool,
     pub change_idle: bool,
+    /// GPU clock limits last applied, to skip redundant pkexec runs
+    applied_gpu_clocks: GpuClockLimit,
 }
 
 impl DeviceManager {
@@ -138,6 +142,7 @@ impl DeviceManager {
             active_id: 0,
             add_active: false,
             change_idle: false,
+            applied_gpu_clocks: GpuClockLimit::default(),
         }
     }
 
@@ -357,6 +362,40 @@ impl DeviceManager {
         {
             turbo::set(enabled);
         }
+        let gpu_clocks = config.power[ac].gpu_clock_limit;
+        if gpu_clocks != self.applied_gpu_clocks {
+            self.applied_gpu_clocks = gpu_clocks;
+            gpu_clocks::apply(gpu_clocks, Duration::ZERO);
+        }
+    }
+
+    /// Cap the GPU clocks for a profile, applying them if the profile is active
+    pub fn set_gpu_clock_limit(&mut self, ac: usize, limit: GpuClockLimit) -> bool {
+        if let Some(config) = self.get_config() {
+            config.power[ac].gpu_clock_limit = limit;
+            if let Err(e) = config.write_to_file() {
+                eprintln!("Error write config {:?}", e);
+            }
+        } else {
+            return false;
+        }
+        let active = self.get_device().map(|laptop| laptop.get_ac_state());
+        if active != Some(ac) {
+            return true;
+        }
+        self.applied_gpu_clocks = limit;
+        gpu_clocks::apply(limit, Duration::from_secs(3))
+    }
+
+    /// Suspend resets the GPU, dropping its clock locks: reapply on next use
+    pub fn forget_gpu_clocks(&mut self) {
+        self.applied_gpu_clocks = GpuClockLimit::default();
+    }
+
+    pub fn get_gpu_clock_limit(&mut self, ac: usize) -> GpuClockLimit {
+        self.get_config()
+            .map(|config| config.power[ac].gpu_clock_limit)
+            .unwrap_or_default()
     }
 
     /// Set CPU turbo for a profile, applying it if the profile is active
