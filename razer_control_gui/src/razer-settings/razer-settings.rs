@@ -275,6 +275,14 @@ fn get_fan_speed(ac: bool) -> Option<i32> {
     }
 }
 
+/// Measured RPM per fan zone (CPU, GPU); empty if the EC can't report it
+fn get_live_fan_rpms() -> Vec<u16> {
+    match send_data(comms::DaemonCommand::GetLiveFanRpm) {
+        Some(comms::DaemonResponse::GetLiveFanRpm { rpms }) => rpms,
+        _ => Vec::new(),
+    }
+}
+
 fn set_fan_speed(ac: bool, value: i32) -> Option<bool> {
     let ac = if ac { 1 } else { 0 };
     let response = send_data(comms::DaemonCommand::SetFanSpeed { ac, rpm: value })?;
@@ -556,6 +564,78 @@ fn get_cpu_utilization() -> Option<u32> {
     None
 }
 
+/// Read average and peak CPU core frequency in MHz from cpufreq
+fn get_cpu_frequency() -> Option<(u32, u32)> {
+    let mut total: u64 = 0;
+    let mut peak: u32 = 0;
+    let mut count: u64 = 0;
+    for entry in fs::read_dir("/sys/devices/system/cpu/cpufreq")
+        .ok()?
+        .flatten()
+    {
+        if let Ok(content) = fs::read_to_string(entry.path().join("scaling_cur_freq"))
+            && let Ok(khz) = content.trim().parse::<u32>()
+        {
+            total += u64::from(khz);
+            peak = peak.max(khz);
+            count += 1;
+        }
+    }
+    (count > 0).then(|| ((total / count / 1000) as u32, peak / 1000))
+}
+
+/// Read the CPU package power limits in watts: sustained (PL1) and burst (PL2).
+/// Firmware can program the MSR and MMIO RAPL interfaces differently; the
+/// lower of the two is the one that takes effect.
+fn get_cpu_power_limits() -> Option<(f64, f64)> {
+    fn read_limit(zone: &str, constraint: &str) -> Option<f64> {
+        let base = format!("/sys/class/powercap/{}", zone);
+        if fs::read_to_string(format!("{}/enabled", base)).ok()?.trim() != "1" {
+            return None;
+        }
+        (0..3).find_map(|i| {
+            let name = fs::read_to_string(format!("{}/constraint_{}_name", base, i)).ok()?;
+            if name.trim() != constraint {
+                return None;
+            }
+            let uw = fs::read_to_string(format!("{}/constraint_{}_power_limit_uw", base, i))
+                .ok()?
+                .trim()
+                .parse::<f64>()
+                .ok()?;
+            (uw > 0.0).then_some(uw / 1_000_000.0)
+        })
+    }
+    let lowest = |constraint: &str| {
+        ["intel-rapl:0", "intel-rapl-mmio:0"]
+            .iter()
+            .filter_map(|zone| read_limit(zone, constraint))
+            .reduce(f64::min)
+    };
+    Some((lowest("long_term")?, lowest("short_term")?))
+}
+
+/// Read the Intel iGPU's current frequency in MHz
+fn get_igpu_frequency() -> Option<u32> {
+    ["card0", "card1", "card2"].iter().find_map(|card| {
+        fs::read_to_string(format!("/sys/class/drm/{}/gt_act_freq_mhz", card))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    })
+}
+
+/// Format power draw against its budget ("7.5 / 80 W"), or whichever is known
+fn format_power(draw: Option<f64>, limit: Option<f64>) -> Option<String> {
+    match (draw, limit) {
+        (Some(d), Some(l)) => Some(format!("{:.1} / {:.0} W", d, l)),
+        (Some(d), None) => Some(format!("{:.1} W", d)),
+        (None, Some(l)) => Some(format!("limit {:.0} W", l)),
+        (None, None) => None,
+    }
+}
+
 /// Create system monitor panel at the bottom (widget-style layout)
 fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -566,8 +646,18 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
     main_box.add_css_class("toolbar");
     main_box.add_css_class("monitor-bar");
 
-    // Helper: create a full-width monitor row (name + temp on left, power · util% on right)
-    fn make_row(label_text: &str) -> (gtk::Box, gtk::Label, gtk::Label, gtk::Label, gtk::Label) {
+    // Helper: create a full-width monitor row (name + temp + freq on left, power · util% on right)
+    #[allow(clippy::type_complexity)]
+    fn make_row(
+        label_text: &str,
+    ) -> (
+        gtk::Box,
+        gtk::Label,
+        gtk::Label,
+        gtk::Label,
+        gtk::Label,
+        gtk::Label,
+    ) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.set_margin_top(1);
         row.set_margin_bottom(1);
@@ -582,6 +672,12 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
         temp.add_css_class("caption");
         temp.add_css_class("numeric");
         row.append(&temp);
+
+        let freq = gtk::Label::new(None);
+        freq.add_css_class("caption");
+        freq.add_css_class("numeric");
+        freq.set_opacity(0.7);
+        row.append(&freq);
 
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
@@ -604,7 +700,7 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
         util.set_opacity(0.7);
         row.append(&util);
 
-        (row, temp, power, dot, util)
+        (row, temp, freq, power, dot, util)
     }
 
     let cpu_name = util::get_cpu_name().unwrap_or_else(|| "CPU".to_string());
@@ -632,9 +728,11 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
         }
     }
 
-    let (cpu_row, cpu_temp_l, cpu_power_l, cpu_dot, cpu_util_l) = make_row(&cpu_label);
-    let (igpu_row, igpu_temp_l, igpu_power_l, igpu_dot, igpu_util_l) = make_row(&igpu_label);
-    let (dgpu_row, dgpu_temp_l, dgpu_power_l, dgpu_dot, dgpu_util_l) = make_row(&dgpu_label);
+    let (cpu_row, cpu_temp_l, cpu_freq_l, cpu_power_l, cpu_dot, cpu_util_l) = make_row(&cpu_label);
+    let (igpu_row, igpu_temp_l, igpu_freq_l, igpu_power_l, igpu_dot, igpu_util_l) =
+        make_row(&igpu_label);
+    let (dgpu_row, dgpu_temp_l, dgpu_freq_l, dgpu_power_l, dgpu_dot, dgpu_util_l) =
+        make_row(&dgpu_label);
 
     // Battery + Fan row (status + watts on left, fan on right)
     let bottom_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -689,6 +787,10 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
         let igpu_util = get_igpu_utilization();
         let dgpu_pwr = nvidia.power;
         let dgpu_util = nvidia.utilization;
+        let cpu_freq = get_cpu_frequency();
+        let cpu_limits = get_cpu_power_limits();
+        let igpu_freq = get_igpu_frequency();
+        let fan_rpms = get_live_fan_rpms();
 
         // CPU
         match cpu_temp {
@@ -698,18 +800,42 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
             }
             None => cpu_row.set_visible(false),
         }
-        match sys_power {
-            Some(w) => {
-                cpu_power_l.set_text(&format!("{:.1} W", w));
+        match cpu_freq {
+            Some((avg, peak)) => {
+                cpu_freq_l.set_text(&format!(
+                    "{:.1} GHz (max {:.1})",
+                    f64::from(avg) / 1000.0,
+                    f64::from(peak) / 1000.0
+                ));
+                cpu_freq_l.set_tooltip_text(Some("Average across cores (fastest core)"));
+                cpu_freq_l.set_visible(true);
+            }
+            None => cpu_freq_l.set_visible(false),
+        }
+        // Package draw needs root (RAPL energy counters), so often only the budget shows
+        match format_power(sys_power, cpu_limits.map(|(pl1, _)| pl1)) {
+            Some(text) => {
+                cpu_power_l.set_text(&text);
+                cpu_power_l.set_tooltip_text(
+                    cpu_limits
+                        .map(|(pl1, pl2)| {
+                            format!(
+                                "Sustained limit (PL1) {:.0} W, burst limit (PL2) {:.0} W",
+                                pl1, pl2
+                            )
+                        })
+                        .as_deref(),
+                );
                 cpu_power_l.set_visible(true);
             }
             None => cpu_power_l.set_visible(false),
         }
+        let cpu_power_shown = sys_power.is_some() || cpu_limits.is_some();
         match cpu_util {
             Some(u) => {
                 cpu_util_l.set_text(&format!("{}%", u));
                 cpu_util_l.set_visible(true);
-                cpu_dot.set_visible(sys_power.is_some());
+                cpu_dot.set_visible(cpu_power_shown);
             }
             None => {
                 cpu_util_l.set_visible(false);
@@ -718,7 +844,7 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
         }
 
         // iGPU
-        let igpu_has = igpu_temp.is_some() || igpu_pwr.is_some();
+        let igpu_has = igpu_temp.is_some() || igpu_pwr.is_some() || igpu_freq.is_some();
         igpu_row.set_visible(igpu_has);
         if igpu_has {
             match igpu_temp {
@@ -727,6 +853,13 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
                     igpu_temp_l.set_visible(true);
                 }
                 None => igpu_temp_l.set_visible(false),
+            }
+            match igpu_freq {
+                Some(mhz) => {
+                    igpu_freq_l.set_text(&format!("{} MHz", mhz));
+                    igpu_freq_l.set_visible(true);
+                }
+                None => igpu_freq_l.set_visible(false),
             }
             match igpu_pwr {
                 Some(w) => {
@@ -759,10 +892,26 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
                 }
                 None => dgpu_temp_l.set_visible(false),
             }
+            match nvidia.graphics_clock_mhz {
+                Some(mhz) => {
+                    let pstate = nvidia
+                        .pstate
+                        .map(|p| format!(" P{}", p))
+                        .unwrap_or_default();
+                    dgpu_freq_l.set_text(&format!("{} MHz{}", mhz, pstate));
+                    dgpu_freq_l.set_visible(true);
+                }
+                None => dgpu_freq_l.set_visible(false),
+            }
         }
-        match dgpu_pwr {
-            Some(w) => {
-                dgpu_power_l.set_text(&format!("{:.1} W", w));
+        match format_power(dgpu_pwr, nvidia.power_limit) {
+            Some(text) => {
+                dgpu_power_l.set_text(&text);
+                dgpu_power_l.set_tooltip_text(
+                    nvidia
+                        .power_limit
+                        .map(|_| "Draw / power limit the driver is enforcing"),
+                );
                 dgpu_power_l.set_visible(true);
             }
             None => dgpu_power_l.set_visible(false),
@@ -812,16 +961,32 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
             }
         }
 
-        match fan {
-            Some(0) => {
-                fan_l.set_text("Fan: Auto");
-                fan_l.set_visible(true);
+        if !fan_rpms.is_empty() {
+            let mode = match fan {
+                Some(0) => " (Auto)",
+                Some(_) => " (Manual)",
+                None => "",
+            };
+            if fan_rpms.iter().all(|rpm| *rpm == 0) {
+                fan_l.set_text(&format!("Fans: stopped{}", mode));
+            } else {
+                let rpms: Vec<String> = fan_rpms.iter().map(|rpm| rpm.to_string()).collect();
+                fan_l.set_text(&format!("Fans: {} RPM{}", rpms.join(" \u{00B7} "), mode));
             }
-            Some(rpm) => {
-                fan_l.set_text(&format!("Fan: {} RPM", rpm));
-                fan_l.set_visible(true);
+            fan_l.set_tooltip_text(Some("Measured speed: CPU fan \u{00B7} GPU fan"));
+            fan_l.set_visible(true);
+        } else {
+            match fan {
+                Some(0) => {
+                    fan_l.set_text("Fan: Auto");
+                    fan_l.set_visible(true);
+                }
+                Some(rpm) => {
+                    fan_l.set_text(&format!("Fan: {} RPM", rpm));
+                    fan_l.set_visible(true);
+                }
+                None => fan_l.set_visible(false),
             }
-            None => fan_l.set_visible(false),
         }
 
         // Write snapshot to shared state for tray tooltip
@@ -830,6 +995,7 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
             state.igpu_temp = igpu_temp;
             state.dgpu_temp = dgpu_temp;
             state.fan_speed = fan;
+            state.fan_rpms = fan_rpms.clone();
             state.on_ac = on_ac;
             state.battery_pct = battery_pct;
             state.battery_status = battery_status.clone();

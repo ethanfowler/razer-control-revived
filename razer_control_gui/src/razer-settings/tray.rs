@@ -9,6 +9,8 @@ pub struct SensorState {
     pub igpu_temp: Option<f64>,
     pub dgpu_temp: Option<f64>,
     pub fan_speed: Option<i32>,
+    /// Measured RPM per fan zone, from the daemon via the GUI
+    pub fan_rpms: Vec<u16>,
     pub on_ac: Option<bool>,
     pub battery_pct: Option<u8>,
     pub battery_status: Option<String>,
@@ -30,6 +32,7 @@ impl SensorState {
             igpu_temp: read_igpu_temp(),
             dgpu_temp: nvidia.temperature,
             fan_speed: None, // requires daemon, skip in tray
+            fan_rpms: Vec::new(),
             on_ac: read_ac_power(),
             battery_pct: read_battery_pct(),
             battery_status: read_battery_status(),
@@ -106,7 +109,10 @@ impl SensorState {
             }
         }
 
-        if let Some(rpm) = self.fan_speed {
+        if !self.fan_rpms.is_empty() {
+            let rpms: Vec<String> = self.fan_rpms.iter().map(|rpm| rpm.to_string()).collect();
+            lines.push(format!("Fans: {} RPM", rpms.join(" \u{00B7} ")));
+        } else if let Some(rpm) = self.fan_speed {
             if rpm == 0 {
                 lines.push("Fan: Auto".into());
             } else {

@@ -7,7 +7,7 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["gui"]
-gui = ["dep:gtk4", "dep:libadwaita"]
+gui = ["dep:gtk4", "dep:libadwaita", "dep:nvml-wrapper"]
 
 [[bin]]
 name = "razer-cli"
@@ -42,6 +42,7 @@ serde-big-array = "0.5.1"
 clap = { version = "4.4.13", features = ["derive"] }
 gtk4 = { version = "0.9", features = ["v4_12"], optional = true }
 libadwaita = { version = "0.7", features = ["v1_5"], optional = true }
+nvml-wrapper = { version = "0.13", optional = true }
 glib = "0.20"
 log = "0.4.22"
 env_logger = "0.11.5"

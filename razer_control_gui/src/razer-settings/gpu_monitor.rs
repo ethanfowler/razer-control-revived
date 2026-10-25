@@ -1,3 +1,5 @@
+use nvml_wrapper::Nvml;
+use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,17 +10,75 @@ pub struct NvidiaTelemetry {
     pub temperature: Option<f64>,
     pub power: Option<f64>,
     pub utilization: Option<u32>,
+    /// Power limit the driver is currently enforcing, in watts.
+    pub power_limit: Option<f64>,
+    pub graphics_clock_mhz: Option<u32>,
+    pub pstate: Option<u32>,
+}
+
+thread_local! {
+    // Loaded lazily; stays None on systems without libnvidia-ml.
+    static NVML: Option<Nvml> = Nvml::init().ok();
 }
 
 /// Read NVIDIA telemetry without invoking vendor tools.
 ///
 /// Running `nvidia-smi` can load the NVIDIA kernel module or wake a runtime-
-/// suspended dGPU. The GUI polls this function regularly, so only sysfs files
-/// belonging to a device that is explicitly reported as active are read.
+/// suspended dGPU. The GUI polls this function regularly, so only devices
+/// explicitly reported as active are read: from sysfs hwmon where the driver
+/// provides it (nouveau), with NVML filling in what the proprietary driver
+/// only exposes there (power limit, clocks, and usually everything else).
 pub fn read_nvidia_telemetry() -> NvidiaTelemetry {
-    read_nvidia_telemetry_from(Path::new("/sys"))
+    let sysfs = Path::new("/sys");
+    let devices = active_nvidia_devices(sysfs);
+    let mut telemetry = devices
+        .iter()
+        .find_map(|device| read_device_telemetry(device))
+        .unwrap_or_default();
+    if let Some(slot) = devices
+        .first()
+        .and_then(|device| device.file_name())
+        .and_then(|name| name.to_str())
+    {
+        merge_nvml_telemetry(&mut telemetry, slot);
+    }
+    telemetry
 }
 
+fn merge_nvml_telemetry(telemetry: &mut NvidiaTelemetry, pci_slot: &str) {
+    NVML.with(|nvml| {
+        let Some(device) = nvml
+            .as_ref()
+            .and_then(|nvml| nvml.device_by_pci_bus_id(pci_slot).ok())
+        else {
+            return;
+        };
+        telemetry.temperature = telemetry.temperature.or_else(|| {
+            device
+                .temperature(TemperatureSensor::Gpu)
+                .ok()
+                .map(f64::from)
+        });
+        telemetry.power = telemetry
+            .power
+            .or_else(|| device.power_usage().ok().map(|mw| f64::from(mw) / 1_000.0));
+        telemetry.utilization = telemetry
+            .utilization
+            .or_else(|| device.utilization_rates().ok().map(|u| u.gpu));
+        telemetry.power_limit = device
+            .enforced_power_limit()
+            .ok()
+            .map(|mw| f64::from(mw) / 1_000.0);
+        telemetry.graphics_clock_mhz = device.clock_info(Clock::Graphics).ok();
+        telemetry.pstate = device
+            .performance_state()
+            .ok()
+            .map(|state| state.as_c())
+            .filter(|state| *state <= 15);
+    });
+}
+
+#[cfg(test)]
 fn read_nvidia_telemetry_from(sysfs: &Path) -> NvidiaTelemetry {
     active_nvidia_devices(sysfs)
         .into_iter()
@@ -84,6 +144,7 @@ fn read_device_telemetry(device: &Path) -> Option<NvidiaTelemetry> {
         temperature,
         power,
         utilization,
+        ..NvidiaTelemetry::default()
     };
     (telemetry != NvidiaTelemetry::default()).then_some(telemetry)
 }
@@ -228,6 +289,7 @@ mod tests {
                 temperature: Some(51.0),
                 power: Some(12.75),
                 utilization: Some(34),
+                ..NvidiaTelemetry::default()
             }
         );
     }
@@ -280,6 +342,7 @@ mod tests {
                 temperature: None,
                 power: None,
                 utilization: Some(42),
+                ..NvidiaTelemetry::default()
             }
         );
     }
