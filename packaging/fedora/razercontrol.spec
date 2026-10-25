@@ -49,7 +49,7 @@ install -D -m 644 razer_control_gui/data/gui/com.encomjp.razer-settings.desktop 
 install -D -m 644 razer_control_gui/data/gui/icon.png $RPM_BUILD_ROOT%{_datadir}/pixmaps/com.github.encomjp.razercontrol.png
 install -D -m 644 razer_control_gui/data/gui/icon.png $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/512x512/apps/com.github.encomjp.razercontrol.png
 install -D -m 644 razer_control_gui/data/devices/laptops.json $RPM_BUILD_ROOT%{_datadir}/razercontrol/laptops.json
-install -D -m 644 razer_control_gui/data/udev/99-hidraw-permissions.rules $RPM_BUILD_ROOT%{_udevrulesdir}/99-hidraw-permissions.rules
+install -D -m 644 razer_control_gui/data/udev/70-razercontrol-hidraw.rules $RPM_BUILD_ROOT%{_udevrulesdir}/70-razercontrol-hidraw.rules
 install -D -m 644 razer_control_gui/data/services/systemd/razercontrol.service $RPM_BUILD_ROOT%{_userunitdir}/razercontrol.service
 
 %files
@@ -60,7 +60,7 @@ install -D -m 644 razer_control_gui/data/services/systemd/razercontrol.service $
 %{_datadir}/pixmaps/com.github.encomjp.razercontrol.png
 %{_datadir}/icons/hicolor/512x512/apps/com.github.encomjp.razercontrol.png
 %{_datadir}/razercontrol/laptops.json
-%{_udevrulesdir}/99-hidraw-permissions.rules
+%{_udevrulesdir}/70-razercontrol-hidraw.rules
 %{_userunitdir}/razercontrol.service
 %license LICENSE
 %doc README.md

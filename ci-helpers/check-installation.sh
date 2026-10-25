@@ -14,7 +14,7 @@ echo "Checking the existence of the necessary files..."
 check_file "$HOME/.local/share/razercontrol"
 check_file "/usr/bin/razer-daemon"
 check_file "/usr/share/razercontrol/laptops.json"
-check_file "/etc/udev/rules.d/99-hidraw-permissions.rules"
+check_file "/etc/udev/rules.d/70-razercontrol-hidraw.rules"
 # CLI
 check_file "/usr/bin/razer-cli"
 # GUI

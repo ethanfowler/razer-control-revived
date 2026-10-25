@@ -107,7 +107,7 @@ jobs:
           cp razer_control_gui/data/devices/laptops.json $PKG/usr/share/razercontrol/
           cp razer_control_gui/data/gui/com.encomjp.razer-settings.desktop $PKG/usr/share/applications/
           cp razer_control_gui/data/gui/icon.png $PKG/usr/share/icons/hicolor/256x256/apps/com.github.encomjp.razercontrol.png
-          cp razer_control_gui/data/udev/99-hidraw-permissions.rules $PKG/etc/udev/rules.d/
+          cp razer_control_gui/data/udev/70-razercontrol-hidraw.rules $PKG/etc/udev/rules.d/
           cp razer_control_gui/data/services/systemd/razercontrol.service $PKG/usr/lib/systemd/user/
 
           cat > $PKG/DEBIAN/control << 'CTRL'
@@ -215,7 +215,7 @@ jobs:
           cp razer_control_gui/data/gui/com.encomjp.razer-settings.desktop $DIST/share/applications/
           cp razer_control_gui/data/devices/laptops.json $DIST/share/razercontrol/
           cp razer_control_gui/data/services/systemd/razercontrol.service $DIST/systemd/
-          cp razer_control_gui/data/udev/99-hidraw-permissions.rules $DIST/udev/
+          cp razer_control_gui/data/udev/70-razercontrol-hidraw.rules $DIST/udev/
           cp release/razer-control-0.2.0-x86_64/install.sh $DIST/install.sh
           # Update version in copied install script
           sed -i "s/0\.2\.0/${APP_VERSION}/g" $DIST/install.sh

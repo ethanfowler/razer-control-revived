@@ -19,7 +19,7 @@ When editing `laptops.json`, always coordinate changes across multiple files.
    }
    ```
 
-2. **Add PID to udev rules** in `razer_control_gui/data/udev/99-hidraw-permissions.rules` — append the lowercase PID (without `0x` prefix) to the `ATTRS{idProduct}==` pipe-separated list. Keep the list sorted by PID value.
+2. **Add PID to udev rules** in `razer_control_gui/data/udev/70-razercontrol-hidraw.rules` — append the lowercase PID (without `0x` prefix) to the `ATTRS{idProduct}==` pipe-separated list. Keep the list sorted by PID value.
 
 3. **Verify** with `cd razer_control_gui && cargo build --release` — the device list is loaded at runtime from the JSON file, so compilation confirms valid JSON but not hardware correctness.
 

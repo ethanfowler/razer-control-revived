@@ -60,7 +60,7 @@ cd razer_control_gui/kde-widget && ./install-plasmoid.sh
 - **Power profiles**: Index 0 = AC, Index 1 = Battery in `Configuration.power[]` array. Power modes: 0=Balanced, 1=Gaming, 2=Creator.
 - **Device features**: Tagged with `["fan", "logo", "boost", "per_key_rgb", "bho", "creator_mode"]` in `laptops.json`. Always check feature availability before sending hardware commands.
 - **Dependencies**: GTK4 (`gtk4` crate), libadwaita, `hidapi` for HID, `dbus` for system bus, `ksni` for system tray. See [razer_control_gui/Cargo.toml](razer_control_gui/Cargo.toml).
-- **Udev rules**: [data/udev/99-hidraw-permissions.rules](razer_control_gui/data/udev/99-hidraw-permissions.rules) grants userspace access to Razer HID devices. Must be updated when adding new device PIDs.
+- **Udev rules**: [data/udev/70-razercontrol-hidraw.rules](razer_control_gui/data/udev/70-razercontrol-hidraw.rules) grants userspace access to Razer HID devices. Must be updated when adding new device PIDs.
 
 ## Documentation
 
@@ -74,6 +74,6 @@ cd razer_control_gui/kde-widget && ./install-plasmoid.sh
 ## Adding a New Device
 
 1. Add entry to `data/devices/laptops.json` with correct `vid`, `pid`, `features`, and `fan` range
-2. Add matching PID to `data/udev/99-hidraw-permissions.rules`
+2. Add matching PID to `data/udev/70-razercontrol-hidraw.rules`
 3. Update `packaging/fedora/razercontrol.spec` version if needed
 4. Test with `cargo build --release` — no unit tests exist, verify on hardware

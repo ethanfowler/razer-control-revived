@@ -360,7 +360,7 @@ If your Razer laptop isn't supported, you can add it:
    }
    ```
 
-3. **Add your PID to udev rules** (`data/udev/99-hidraw-permissions.rules`):
+3. **Add your PID to udev rules** (`data/udev/70-razercontrol-hidraw.rules`):
    ```
    KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="YOUR_PID", MODE="0666"
    ```

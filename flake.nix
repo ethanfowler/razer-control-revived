@@ -50,7 +50,7 @@
             mkdir -p $out/libexec
             mkdir -p $out/share/applications
             mv $out/bin/daemon $out/libexec
-            cp ${./razer_control_gui/data/udev/99-hidraw-permissions.rules} $out/lib/udev/rules.d/99-hidraw-permissions.rules
+            cp ${./razer_control_gui/data/udev/70-razercontrol-hidraw.rules} $out/lib/udev/rules.d/70-razercontrol-hidraw.rules
             cp ${./razer_control_gui/data/gui/com.encomjp.razer-settings.desktop} $out/share/applications/com.encomjp.razer-settings.desktop
           '';
 

@@ -40,7 +40,8 @@ sudo install -Dm644 "$BUILD_DIR/data/gui/com.github.encomjp.razercontrol.svg" /u
 
 # Install udev rules
 echo "Installing udev rules..."
-sudo install -Dm644 "$BUILD_DIR/data/udev/99-hidraw-permissions.rules" /etc/udev/rules.d/99-hidraw-permissions.rules
+sudo rm -f /etc/udev/rules.d/99-hidraw-permissions.rules
+sudo install -Dm644 "$BUILD_DIR/data/udev/70-razercontrol-hidraw.rules" /etc/udev/rules.d/70-razercontrol-hidraw.rules
 
 # Install systemd user service
 echo "Installing systemd user service..."
