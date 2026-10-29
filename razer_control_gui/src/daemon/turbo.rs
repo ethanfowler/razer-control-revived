@@ -1,41 +1,23 @@
 //! CPU turbo boost: intel_pstate's no_turbo, or the generic cpufreq boost
-//! switch on other drivers. The daemon runs as the session user, so writing
-//! relies on the tmpfiles rule that makes just these files writable by the
-//! razercontrol group.
+//! switch on other drivers. Reading is open to everyone; writing needs root,
+//! so the daemon goes through razer-helper, which includes this file.
 
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const CPU_DIR: &str = "/sys/devices/system/cpu";
 const NO_TURBO: &str = "intel_pstate/no_turbo";
 const BOOST: &str = "cpufreq/boost";
-
-static WRITE_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Whether turbo is enabled, or None if it can't be controlled
 pub fn get() -> Option<bool> {
     get_in(Path::new(CPU_DIR))
 }
 
-/// Enable or disable turbo. Failures are logged once.
-pub fn set(enabled: bool) -> bool {
-    match set_in(Path::new(CPU_DIR), enabled) {
-        Ok(()) => {
-            println!("CPU turbo {}", if enabled { "on" } else { "off" });
-            true
-        }
-        Err(e) => {
-            if !WRITE_ERROR_LOGGED.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "Can't set CPU turbo: {} (is the tmpfiles rule installed and the user in the razercontrol group?)",
-                    e
-                );
-            }
-            false
-        }
-    }
+/// Enable or disable turbo
+pub fn write(enabled: bool) -> io::Result<()> {
+    set_in(Path::new(CPU_DIR), enabled)
 }
 
 fn read_flag(path: &Path) -> Option<bool> {
@@ -66,7 +48,7 @@ fn set_in(root: &Path, enabled: bool) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 

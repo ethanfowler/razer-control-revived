@@ -3,8 +3,7 @@ use crate::battery;
 use crate::config;
 use crate::config::{CpuPowerLimit, GpuClockLimit};
 use crate::dbus_mutter_idlemonitor;
-use crate::gpu_clocks;
-use crate::powercap;
+use crate::helper;
 use crate::turbo;
 use dbus::blocking::Connection;
 use hidapi::HidApi;
@@ -355,17 +354,17 @@ impl DeviceManager {
             return;
         };
         if let Some(limit) = config.cpu_power_limits.for_profile(&config.power[ac]) {
-            powercap::apply(limit);
+            helper::set_cpu_power_limit(limit, Duration::ZERO);
         }
         if let Some(enabled) = config.power[ac].turbo
             && turbo::get() != Some(enabled)
         {
-            turbo::set(enabled);
+            helper::set_turbo(enabled, Duration::ZERO);
         }
         let gpu_clocks = config.power[ac].gpu_clock_limit;
         if gpu_clocks != self.applied_gpu_clocks {
             self.applied_gpu_clocks = gpu_clocks;
-            gpu_clocks::apply(gpu_clocks, Duration::ZERO);
+            helper::set_gpu_clocks(gpu_clocks, Duration::ZERO);
         }
     }
 
@@ -384,7 +383,7 @@ impl DeviceManager {
             return true;
         }
         self.applied_gpu_clocks = limit;
-        gpu_clocks::apply(limit, Duration::from_secs(3))
+        helper::set_gpu_clocks(limit, Duration::from_secs(3))
     }
 
     /// Suspend resets the GPU, dropping its clock locks: reapply on next use
@@ -410,7 +409,7 @@ impl DeviceManager {
         }
         let active = self.get_device().map(|laptop| laptop.get_ac_state());
         if active == Some(ac) {
-            turbo::set(enabled)
+            helper::set_turbo(enabled, Duration::from_secs(3))
         } else {
             true
         }

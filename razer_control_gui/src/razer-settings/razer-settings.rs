@@ -1762,12 +1762,16 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let is_ac = is_ac.clone();
         let refreshing = refreshing.clone();
         let subtitle = cpu_limit_slider.subtitle.clone();
+        // GTK repeats value-changed while dragging within a notch; only send
+        // notch changes, as each one runs the privileged helper
+        let last_notch = Rc::new(Cell::new(cpu_limit_slider.scale.value().round() as usize));
         cpu_limit_slider.scale.connect_value_changed(move |sc| {
-            if refreshing.get() {
+            let notch = sc.value().round() as usize;
+            let moved = last_notch.replace(notch) != notch;
+            if refreshing.get() || !moved {
                 return;
             }
             let ac = is_ac.get();
-            let notch = sc.value().round() as usize;
             let limit = notch
                 .checked_sub(1)
                 .and_then(|i| CPU_LIMIT_NOTCHES.get(i).copied());

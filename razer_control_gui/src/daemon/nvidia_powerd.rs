@@ -3,7 +3,7 @@
 //! With powerd running, the GPU power limit follows the firmware's per-mode
 //! tables, which on some laptops only ever raise it above the base TGP. The
 //! daemon runs as the session user, so it relies on the polkit rule that lets
-//! the razercontrol group start and stop just this unit. Without the rule,
+//! the active local user start and stop just this unit. Without the rule,
 //! GNOME may still show a password dialog, so callers run this off-thread.
 
 use std::process::Command;
@@ -39,7 +39,7 @@ pub fn set(enabled: bool) -> (bool, String) {
         }
         Ok(output) => {
             let msg = format!(
-                "Can't {} {}: {} (is the polkit rule installed and the user in the razercontrol group?)",
+                "Can't {} {}: {} (is the polkit rule installed?)",
                 verb,
                 UNIT,
                 String::from_utf8_lossy(&output.stderr).trim()

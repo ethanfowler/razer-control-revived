@@ -18,8 +18,8 @@ name = "daemon"
 path = "src/daemon/daemon.rs"
 
 [[bin]]
-name = "razer-gpu-clocks"
-path = "src/gpu-clocks/gpu-clocks.rs"
+name = "razer-helper"
+path = "src/helper/helper.rs"
 
 [[bin]]
 name = "razer-settings"

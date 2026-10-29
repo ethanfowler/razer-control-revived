@@ -19,13 +19,13 @@ mod dbus_mutter_displayconfig;
 mod dbus_mutter_idlemonitor;
 mod device;
 mod gpu;
-mod gpu_clocks;
+mod helper;
 mod kbd;
 mod login1;
 mod nvidia_powerd;
-mod powercap;
 mod screensaver;
 mod thermal;
+#[allow(dead_code)] // writing is razer-helper's job
 mod turbo;
 
 use crate::kbd::Effect;
@@ -692,7 +692,7 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                 Some(comms::DaemonResponse::GetGpuClockLimit {
                     graphics: limit.graphics,
                     memory: limit.memory,
-                    memory_clocks: gpu_clocks::supported_memory_clocks(),
+                    memory_clocks: helper::supported_memory_clocks(),
                 })
             }
             comms::DaemonCommand::SetTurbo { ac, enabled } if ac < 2 => {

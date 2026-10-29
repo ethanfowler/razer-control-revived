@@ -1008,7 +1008,7 @@ fn write_turbo(ac: usize, enabled: bool) {
     match send_data(comms::DaemonCommand::SetTurbo { ac, enabled }) {
         Some(comms::DaemonResponse::SetTurbo { result: true }) => read_turbo(ac),
         Some(comms::DaemonResponse::SetTurbo { result: false }) => {
-            eprintln!("Failed to set CPU turbo (is the tmpfiles rule installed?)")
+            eprintln!("Failed to set CPU turbo (is razer-helper installed?)")
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),

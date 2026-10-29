@@ -1,8 +1,0 @@
-// Razer Laptop Control - let the razercontrol group cap the GPU clocks without a
-// password. The helper this action runs can only set or clear clock upper bounds.
-polkit.addRule(function(action, subject) {
-    if (action.id == "com.github.encomjp.razercontrol.gpu-clocks" &&
-        subject.isInGroup("razercontrol")) {
-        return polkit.Result.YES;
-    }
-});

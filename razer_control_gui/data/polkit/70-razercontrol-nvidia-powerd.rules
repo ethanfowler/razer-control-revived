@@ -1,10 +1,10 @@
-// Razer Laptop Control - let the razercontrol group start and stop nvidia-powerd
+// Razer Laptop Control - let the user at the machine start and stop nvidia-powerd
 // (NVIDIA Dynamic Boost) without a password. No other unit or action is opened up.
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         action.lookup("unit") == "nvidia-powerd.service" &&
         (action.lookup("verb") == "start" || action.lookup("verb") == "stop") &&
-        subject.isInGroup("razercontrol")) {
+        subject.local && subject.active) {
         return polkit.Result.YES;
     }
 });
