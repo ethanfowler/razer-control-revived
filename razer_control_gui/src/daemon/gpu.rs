@@ -123,74 +123,70 @@ pub fn set_dgpu_runtime_pm(enabled: bool) -> bool {
     }
 }
 
-/// Check if envycontrol is installed
-pub fn envycontrol_available() -> bool {
-    Command::new("which")
-        .arg("envycontrol")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Query current envycontrol GPU mode
-pub fn get_envycontrol_mode() -> String {
-    match Command::new("envycontrol").arg("--query").output() {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            // envycontrol --query outputs something like "Current mode: hybrid"
-            if let Some(mode) = stdout.to_lowercase().split("mode:").nth(1) {
-                mode.trim().to_string()
-            } else {
-                stdout.trim().to_lowercase()
-            }
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("envycontrol --query failed: {}", stderr);
-            "unknown".to_string()
-        }
-        Err(e) => {
-            eprintln!("Failed to run envycontrol: {}", e);
-            "unknown".to_string()
-        }
+/// The installed GPU mode switcher: Ubuntu's prime-select, else envycontrol
+pub fn gpu_mode_tool() -> Option<&'static str> {
+    if Path::new("/usr/bin/prime-select").exists() {
+        Some("prime-select")
+    } else if ["/usr/bin/envycontrol", "/usr/local/bin/envycontrol"]
+        .iter()
+        .any(|path| Path::new(path).exists())
+    {
+        Some("envycontrol")
+    } else {
+        None
     }
 }
 
-/// Set GPU mode via envycontrol. Returns (success, message).
-pub fn set_envycontrol_mode(mode: &str) -> (bool, String) {
-    let valid_modes = ["integrated", "hybrid", "nvidia"];
-    if !valid_modes.contains(&mode) {
-        return (
-            false,
-            format!(
-                "Invalid mode '{}'. Use: integrated, hybrid, or nvidia",
-                mode
-            ),
-        );
+/// The selected GPU mode (hybrid, integrated or nvidia), which applies from
+/// the next login or boot, or "unknown". Querying needs no root.
+pub fn get_gpu_mode(tool: &str) -> String {
+    if tool == "prime-select" {
+        // What `prime-select query` reads, without starting Python on every
+        // poll: on, on-demand, or anything else for intel
+        let mode = match fs::read_to_string("/etc/prime-discrete") {
+            Ok(text) => match text.trim() {
+                "on" => "nvidia",
+                "on-demand" => "hybrid",
+                _ => "integrated",
+            },
+            Err(_) => "unknown",
+        };
+        return mode.to_string();
     }
-
-    match Command::new("envycontrol").args(["-s", mode]).output() {
+    let output = match Command::new(tool).arg("--query").output() {
+        Ok(output) if output.status.success() => output,
         Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if output.status.success() {
-                let msg = format!(
-                    "GPU mode set to '{}'. Logout required to take effect.",
-                    mode
-                );
-                println!("{}", msg);
-                (true, msg)
-            } else {
-                let msg = format!("envycontrol failed: {}{}", stdout, stderr);
-                eprintln!("{}", msg);
-                (false, msg)
-            }
+            eprintln!(
+                "{} query failed: {}",
+                tool,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return "unknown".to_string();
         }
         Err(e) => {
-            let msg = format!("Failed to run envycontrol: {}", e);
-            eprintln!("{}", msg);
-            (false, msg)
+            eprintln!("Failed to run {}: {}", tool, e);
+            return "unknown".to_string();
         }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    // envycontrol prints e.g. "Current mode: hybrid"
+    let mode = stdout.rsplit("mode:").next().unwrap_or("").trim();
+    match mode {
+        "hybrid" => "hybrid",
+        "integrated" => "integrated",
+        "nvidia" => "nvidia",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+/// What switching to a mode needs before it takes effect
+pub fn gpu_mode_applies(mode: &str) -> &'static str {
+    // Integrated unloads the NVIDIA driver, which is in use until a reboot
+    if mode == "integrated" {
+        "Restart to apply."
+    } else {
+        "Log out and back in to apply."
     }
 }
 

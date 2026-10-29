@@ -435,17 +435,12 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
         comms::DaemonCommand::GetGpuStatus => {
             let gpus = gpu::discover_gpus();
             let dgpu_rpm = gpu::get_dgpu_runtime_pm();
-            let ec_available = gpu::envycontrol_available();
-            let ec_mode = if ec_available {
-                gpu::get_envycontrol_mode()
-            } else {
-                "unknown".to_string()
-            };
+            let tool = gpu::gpu_mode_tool();
             return Some(comms::DaemonResponse::GetGpuStatus {
                 gpus,
                 dgpu_runtime_pm: dgpu_rpm,
-                envycontrol_mode: ec_mode,
-                envycontrol_available: ec_available,
+                gpu_mode: tool.map_or("unknown".to_string(), gpu::get_gpu_mode),
+                gpu_mode_tool: tool.map(str::to_string),
             });
         }
         comms::DaemonCommand::SetDgpuRuntimePM { enabled } => {
@@ -454,10 +449,44 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
             });
         }
         comms::DaemonCommand::SetGpuMode { mode } => {
-            let (ok, msg) = gpu::set_envycontrol_mode(mode);
+            if !["hybrid", "integrated", "nvidia"].contains(&mode.as_str()) {
+                return Some(comms::DaemonResponse::SetGpuMode {
+                    result: false,
+                    message: format!("Invalid GPU mode '{}'", mode),
+                });
+            }
+            if gpu::gpu_mode_tool().is_none() {
+                return Some(comms::DaemonResponse::SetGpuMode {
+                    result: false,
+                    message:
+                        "Install nvidia-prime (prime-select) or envycontrol to switch GPU modes"
+                            .to_string(),
+                });
+            }
+            // Switching can take a minute, longer than clients wait for a
+            // reply, so it reports back with a desktop notification
+            let mode = mode.clone();
+            thread::spawn(move || {
+                let (title, body) = match helper::set_gpu_mode(&mode) {
+                    Ok(()) => {
+                        println!("GPU mode set to {}", mode);
+                        (
+                            format!("GPU mode set to {}", mode),
+                            gpu::gpu_mode_applies(&mode).to_string(),
+                        )
+                    }
+                    Err(e) => {
+                        eprintln!("Couldn't set GPU mode {}: {}", mode, e);
+                        ("Couldn't switch GPU mode".to_string(), e)
+                    }
+                };
+                let _ = std::process::Command::new("notify-send")
+                    .args(["--app-name=Razer Settings", &title, &body])
+                    .status();
+            });
             return Some(comms::DaemonResponse::SetGpuMode {
-                result: ok,
-                message: msg,
+                result: true,
+                message: "Switching GPU mode; a notification will say when it's done".to_string(),
             });
         }
         comms::DaemonCommand::GetNvidiaPowerd => {

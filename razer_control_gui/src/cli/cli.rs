@@ -100,7 +100,7 @@ enum WriteAttr {
     Bho(BhoParams),
     /// Set dGPU runtime power management
     RuntimePm(RuntimePmParams),
-    /// Set GPU mode via envycontrol (hybrid, integrated, nvidia)
+    /// Set GPU mode via prime-select or envycontrol (hybrid, integrated, nvidia)
     GpuMode(GpuModeParams),
     /// Fix the CPU power limits for a profile, or follow the power mode
     CpuLimit(CpuLimitParams),
@@ -855,8 +855,8 @@ fn read_gpu_status() {
         Some(comms::DaemonResponse::GetGpuStatus {
             gpus,
             dgpu_runtime_pm,
-            envycontrol_mode,
-            envycontrol_available,
+            gpu_mode,
+            gpu_mode_tool,
         }) => {
             println!("Detected GPUs:");
             for gpu in &gpus {
@@ -878,10 +878,9 @@ fn read_gpu_status() {
                     "on (always active)"
                 }
             );
-            if envycontrol_available {
-                println!("envycontrol mode: {}", envycontrol_mode);
-            } else {
-                println!("envycontrol: not installed");
+            match gpu_mode_tool {
+                Some(tool) => println!("GPU mode: {} ({})", gpu_mode, tool),
+                None => println!("GPU mode: no switcher (prime-select or envycontrol) installed"),
             }
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),

@@ -30,21 +30,18 @@ fn send_data(opt: comms::DaemonCommand) -> Option<comms::DaemonResponse> {
     }
 }
 
-fn get_gpu_status() -> Option<(Vec<comms::GpuInfo>, bool, String, bool)> {
+/// GPUs, whether dGPU runtime PM is on, the selected GPU mode and the
+/// switcher that sets it, if one is installed
+fn get_gpu_status() -> Option<(Vec<comms::GpuInfo>, bool, String, Option<String>)> {
     let response = send_data(comms::DaemonCommand::GetGpuStatus)?;
     use comms::DaemonResponse::*;
     match response {
         GetGpuStatus {
             gpus,
             dgpu_runtime_pm,
-            envycontrol_mode,
-            envycontrol_available,
-        } => Some((
-            gpus,
-            dgpu_runtime_pm,
-            envycontrol_mode,
-            envycontrol_available,
-        )),
+            gpu_mode,
+            gpu_mode_tool,
+        } => Some((gpus, dgpu_runtime_pm, gpu_mode, gpu_mode_tool)),
         response => {
             println!("Instead of GetGpuStatus got {response:?}");
             None
@@ -1989,16 +1986,16 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         None
     };
 
-    // --- envycontrol GPU Mode ---
-    let ec_available = gpu_status.as_ref().is_some_and(|(_, _, _, avail)| *avail);
-    let ec_mode = gpu_status
+    // --- GPU mode, via prime-select or envycontrol ---
+    let gpu_mode_tool = gpu_status.as_ref().and_then(|(_, _, _, tool)| tool.clone());
+    let gpu_mode = gpu_status
         .as_ref()
         .map_or("unknown".to_string(), |(_, _, mode, _)| mode.clone());
 
-    let ec_section = settings_page.add_section(Some("GPU Mode (envycontrol)"));
+    let ec_section = settings_page.add_section(Some("GPU Mode"));
 
-    if ec_available {
-        let mode_idx = match ec_mode.as_str() {
+    if let Some(tool) = gpu_mode_tool {
+        let mode_idx = match gpu_mode.as_str() {
             "hybrid" => 0u32,
             "integrated" => 1,
             "nvidia" => 2,
@@ -2008,12 +2005,15 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let mode_combo = make_combo_row(
             "GPU Mode",
             gpu_mode_description(mode_idx),
-            &["Hybrid", "Integrated", "NVIDIA Only"],
+            &["Hybrid", "Integrated Only", "NVIDIA Only"],
             mode_idx,
         );
         ec_section.add_row(&mode_combo);
 
-        let info_label = gtk::Label::new(Some("Changing GPU mode requires logout to take effect."));
+        let info_label = gtk::Label::new(Some(&format!(
+            "Switched with {tool}, which can take a minute; a notification says when it's done. \
+             Hybrid and NVIDIA Only apply after logging out, Integrated Only after a restart."
+        )));
         info_label.set_wrap(true);
         info_label.add_css_class("dim-label");
         info_label.add_css_class("caption");
@@ -2057,10 +2057,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
 
                 // Perform the action
                 let (msg, timeout) = match set_gpu_mode(&mode_owned) {
-                    Some((true, _)) => (
-                        format!("GPU mode set to '{}' \u{2014} log out to apply", mode_owned),
-                        3,
-                    ),
+                    Some((true, msg)) => (msg, 4),
                     Some((false, msg)) => (format!("Failed: {}", msg), 4),
                     None => ("Failed to communicate with daemon".to_string(), 4),
                 };
@@ -2078,7 +2075,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         }
     } else {
         let info_label = gtk::Label::new(Some(
-            "envycontrol is not installed. Install it for persistent GPU mode switching.",
+            "Install nvidia-prime (prime-select) or envycontrol to switch between the integrated and NVIDIA GPUs.",
         ));
         info_label.set_wrap(true);
         info_label.add_css_class("dim-label");
@@ -2477,9 +2474,9 @@ fn make_battery_page() -> SettingsPage {
 
 fn gpu_mode_description(index: u32) -> &'static str {
     match index {
-        0 => "Both GPUs active, apps choose which to use",
-        1 => "Only integrated GPU, maximum battery life",
-        2 => "Only NVIDIA GPU, maximum performance",
+        0 => "Intel runs the desktop; the NVIDIA GPU powers down when idle",
+        1 => "NVIDIA GPU switched off entirely. Longest battery life",
+        2 => "NVIDIA GPU runs everything and never sleeps. Highest idle power",
         _ => "",
     }
 }

@@ -9,10 +9,12 @@
 //!   razer-helper cpu-limit <PL1 W> <PL2 W>
 //!   razer-helper turbo <on|off>
 //!   razer-helper gpu-clocks <graphics MHz|off> <memory MHz|off>
+//!   razer-helper gpu-mode <hybrid|integrated|nvidia>
 //!
 //! GPU clock caps only set an upper bound (the lower bound is the lowest
 //! clock the GPU supports) or remove it.
 
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
 #[path = "../daemon/powercap.rs"]
@@ -23,7 +25,13 @@ mod turbo;
 
 const NVIDIA_SMI: &str = "/usr/bin/nvidia-smi";
 const MAX_MHZ: u32 = 20_000;
-const USAGE: &str = "usage: razer-helper cpu-limit <PL1 W> <PL2 W> | turbo <on|off> | gpu-clocks <graphics MHz|off> <memory MHz|off>";
+const USAGE: &str = "usage: razer-helper cpu-limit <PL1 W> <PL2 W> | turbo <on|off> | gpu-clocks <graphics MHz|off> <memory MHz|off> | gpu-mode <hybrid|integrated|nvidia>";
+
+// GPU mode switchers, by fixed path as this runs as root: Ubuntu's own
+// prime-select is preferred, and envycontrol serves other distros
+const PRIME_SELECT: &str = "/usr/bin/prime-select";
+const GPU_MANAGER: &str = "/usr/bin/gpu-manager";
+const ENVYCONTROL: [&str; 2] = ["/usr/bin/envycontrol", "/usr/local/bin/envycontrol"];
 
 /// PL1/PL2 in watts, bounded as the daemon's config is
 fn parse_cpu_limit(pl1: &str, pl2: &str) -> Result<(u32, u32), String> {
@@ -39,6 +47,57 @@ fn parse_cpu_limit(pl1: &str, pl2: &str) -> Result<(u32, u32), String> {
             "power limits out of range: PL1 {} W, PL2 {} W (need 5 <= PL1 <= PL2 <= 250)",
             pl1, pl2
         ))
+    }
+}
+
+/// prime-select's profile for a GPU mode
+fn prime_profile(mode: &str) -> Result<&'static str, String> {
+    match mode {
+        "hybrid" => Ok("on-demand"),
+        "integrated" => Ok("intel"),
+        "nvidia" => Ok("nvidia"),
+        _ => Err(format!(
+            "invalid GPU mode '{}': expected hybrid, integrated or nvidia",
+            mode
+        )),
+    }
+}
+
+fn run_tool(program: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("can't run {}: {}", program, e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} {}: {}{}",
+            program,
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn set_gpu_mode(mode: &str) -> Result<(), String> {
+    let profile = prime_profile(mode)?;
+    if Path::new(PRIME_SELECT).exists() {
+        run_tool(PRIME_SELECT, &[profile])?;
+        // prime-select only records the choice: gpu-manager turns it into
+        // the Xorg config, normally at boot. Running it now lets hybrid and
+        // nvidia take effect at the next login rather than the next boot.
+        if Path::new(GPU_MANAGER).exists()
+            && let Err(e) = run_tool(GPU_MANAGER, &[])
+        {
+            eprintln!("razer-helper: {} (the mode applies after a reboot)", e);
+        }
+        return Ok(());
+    }
+    match ENVYCONTROL.iter().find(|path| Path::new(path).exists()) {
+        Some(envycontrol) => run_tool(envycontrol, &["-s", mode]),
+        None => Err("neither prime-select nor envycontrol is installed".to_string()),
     }
 }
 
@@ -122,6 +181,7 @@ fn run(args: &[String]) -> Result<(), String> {
             apply("graphics", "-lgc", "-rgc", graphics)?;
             apply("memory", "-lmc", "-rmc", memory)
         }
+        ["gpu-mode", mode] => set_gpu_mode(mode),
         _ => Err(USAGE.to_string()),
     }
 }
@@ -162,6 +222,15 @@ mod tests {
     }
 
     #[test]
+    fn maps_gpu_modes_to_prime_profiles() {
+        assert_eq!(prime_profile("hybrid"), Ok("on-demand"));
+        assert_eq!(prime_profile("integrated"), Ok("intel"));
+        assert_eq!(prime_profile("nvidia"), Ok("nvidia"));
+        assert!(prime_profile("on-demand").is_err());
+        assert!(prime_profile("nvidia; reboot").is_err());
+    }
+
+    #[test]
     fn parses_switches() {
         assert_eq!(parse_switch("on"), Ok(true));
         assert_eq!(parse_switch("off"), Ok(false));
@@ -176,5 +245,7 @@ mod tests {
         assert!(run(&args(&["gpu-clocks", "1200"])).is_err());
         assert!(run(&args(&["turbo", "on", "off"])).is_err());
         assert!(run(&args(&["cpu-limit", "55"])).is_err());
+        assert!(run(&args(&["gpu-mode", "bogus"])).is_err());
+        assert!(run(&args(&["gpu-mode"])).is_err());
     }
 }

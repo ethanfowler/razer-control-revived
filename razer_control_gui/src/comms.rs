@@ -201,8 +201,10 @@ pub enum DaemonResponse {
     GetGpuStatus {
         gpus: Vec<GpuInfo>,
         dgpu_runtime_pm: bool,
-        envycontrol_mode: String,
-        envycontrol_available: bool,
+        /// Selected mode: hybrid, integrated, nvidia or unknown
+        gpu_mode: String,
+        /// The switcher in use (prime-select or envycontrol), if installed
+        gpu_mode_tool: Option<String>,
     },
     SetDgpuRuntimePM {
         result: bool,

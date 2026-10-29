@@ -59,6 +59,13 @@ pub fn set_gpu_clocks(limit: GpuClockLimit, wait: Duration) -> bool {
     )
 }
 
+/// Switch the GPU mode, waiting until it's done: prime-select rebuilds the
+/// initramfs, which can take a minute, so callers run this off-thread
+pub fn set_gpu_mode(mode: &str) -> Result<(), String> {
+    let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    run_helper(&["gpu-mode".to_string(), mode.to_string()])
+}
+
 /// Supported memory clocks in MHz, highest first
 pub fn supported_memory_clocks() -> Vec<u32> {
     let Ok(output) = Command::new("nvidia-smi")
