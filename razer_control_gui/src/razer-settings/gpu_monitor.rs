@@ -23,6 +23,11 @@ pub struct NvidiaTelemetry {
 /// most this often, leaving it time to sleep in between.
 const NVML_INTERVAL: Duration = Duration::from_secs(15);
 
+/// For about half a second after waking, the driver reports a 590.01 W
+/// placeholder. Laptop GPUs draw well under this, so a reading at or above
+/// it is discarded and retried at the next poll.
+const MAX_PLAUSIBLE_WATTS: f64 = 500.0;
+
 thread_local! {
     // Loaded lazily; stays None on systems without libnvidia-ml.
     static NVML: Option<Nvml> = Nvml::init().ok();
@@ -52,10 +57,17 @@ pub fn read_nvidia_telemetry() -> NvidiaTelemetry {
     {
         let nvml = match LAST_NVML.get() {
             Some((taken, reading)) if taken.elapsed() < NVML_INTERVAL => reading,
-            _ => {
+            last => {
                 let reading = read_nvml_telemetry(slot);
-                LAST_NVML.set(Some((Instant::now(), reading)));
-                reading
+                if reading
+                    .power
+                    .is_some_and(|watts| watts >= MAX_PLAUSIBLE_WATTS)
+                {
+                    last.map(|(_, reading)| reading).unwrap_or_default()
+                } else {
+                    LAST_NVML.set(Some((Instant::now(), reading)));
+                    reading
+                }
             }
         };
         telemetry.temperature = telemetry.temperature.or(nvml.temperature);
