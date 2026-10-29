@@ -1,7 +1,9 @@
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const NVIDIA_VENDOR_ID: &str = "0x10de";
 
@@ -16,9 +18,16 @@ pub struct NvidiaTelemetry {
     pub pstate: Option<u32>,
 }
 
+/// Every NVML query counts as GPU activity, so querying on each poll keeps
+/// an idle GPU from ever powering down. While it's awake it's queried at
+/// most this often, leaving it time to sleep in between.
+const NVML_INTERVAL: Duration = Duration::from_secs(15);
+
 thread_local! {
     // Loaded lazily; stays None on systems without libnvidia-ml.
     static NVML: Option<Nvml> = Nvml::init().ok();
+    // The last NVML reading and when it was taken
+    static LAST_NVML: Cell<Option<(Instant, NvidiaTelemetry)>> = const { Cell::new(None) };
 }
 
 /// Read NVIDIA telemetry without invoking vendor tools.
@@ -28,6 +37,7 @@ thread_local! {
 /// explicitly reported as active are read: from sysfs hwmon where the driver
 /// provides it (nouveau), with NVML filling in what the proprietary driver
 /// only exposes there (power limit, clocks, and usually everything else).
+/// NVML readings can be up to NVML_INTERVAL old.
 pub fn read_nvidia_telemetry() -> NvidiaTelemetry {
     let sysfs = Path::new("/sys");
     let devices = active_nvidia_devices(sysfs);
@@ -40,42 +50,51 @@ pub fn read_nvidia_telemetry() -> NvidiaTelemetry {
         .and_then(|device| device.file_name())
         .and_then(|name| name.to_str())
     {
-        merge_nvml_telemetry(&mut telemetry, slot);
+        let nvml = match LAST_NVML.get() {
+            Some((taken, reading)) if taken.elapsed() < NVML_INTERVAL => reading,
+            _ => {
+                let reading = read_nvml_telemetry(slot);
+                LAST_NVML.set(Some((Instant::now(), reading)));
+                reading
+            }
+        };
+        telemetry.temperature = telemetry.temperature.or(nvml.temperature);
+        telemetry.power = telemetry.power.or(nvml.power);
+        telemetry.utilization = telemetry.utilization.or(nvml.utilization);
+        telemetry.power_limit = nvml.power_limit;
+        telemetry.graphics_clock_mhz = nvml.graphics_clock_mhz;
+        telemetry.pstate = nvml.pstate;
     }
     telemetry
 }
 
-fn merge_nvml_telemetry(telemetry: &mut NvidiaTelemetry, pci_slot: &str) {
+fn read_nvml_telemetry(pci_slot: &str) -> NvidiaTelemetry {
     NVML.with(|nvml| {
         let Some(device) = nvml
             .as_ref()
             .and_then(|nvml| nvml.device_by_pci_bus_id(pci_slot).ok())
         else {
-            return;
+            return NvidiaTelemetry::default();
         };
-        telemetry.temperature = telemetry.temperature.or_else(|| {
-            device
+        NvidiaTelemetry {
+            temperature: device
                 .temperature(TemperatureSensor::Gpu)
                 .ok()
-                .map(f64::from)
-        });
-        telemetry.power = telemetry
-            .power
-            .or_else(|| device.power_usage().ok().map(|mw| f64::from(mw) / 1_000.0));
-        telemetry.utilization = telemetry
-            .utilization
-            .or_else(|| device.utilization_rates().ok().map(|u| u.gpu));
-        telemetry.power_limit = device
-            .enforced_power_limit()
-            .ok()
-            .map(|mw| f64::from(mw) / 1_000.0);
-        telemetry.graphics_clock_mhz = device.clock_info(Clock::Graphics).ok();
-        telemetry.pstate = device
-            .performance_state()
-            .ok()
-            .map(|state| state.as_c())
-            .filter(|state| *state <= 15);
-    });
+                .map(f64::from),
+            power: device.power_usage().ok().map(|mw| f64::from(mw) / 1_000.0),
+            utilization: device.utilization_rates().ok().map(|u| u.gpu),
+            power_limit: device
+                .enforced_power_limit()
+                .ok()
+                .map(|mw| f64::from(mw) / 1_000.0),
+            graphics_clock_mhz: device.clock_info(Clock::Graphics).ok(),
+            pstate: device
+                .performance_state()
+                .ok()
+                .map(|state| state.as_c())
+                .filter(|state| *state <= 15),
+        }
+    })
 }
 
 #[cfg(test)]

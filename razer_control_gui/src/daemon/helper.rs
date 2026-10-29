@@ -9,7 +9,7 @@
 use crate::config::{CpuPowerLimit, GpuClockLimit};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -66,8 +66,22 @@ pub fn set_gpu_mode(mode: &str) -> Result<(), String> {
     run_helper(&["gpu-mode".to_string(), mode.to_string()])
 }
 
-/// Supported memory clocks in MHz, highest first
+static MEMORY_CLOCKS: OnceLock<Vec<u32>> = OnceLock::new();
+
+/// Supported memory clocks in MHz, highest first. They never change, and
+/// nvidia-smi wakes a sleeping GPU, so they're read once, when first known.
 pub fn supported_memory_clocks() -> Vec<u32> {
+    if let Some(clocks) = MEMORY_CLOCKS.get() {
+        return clocks.clone();
+    }
+    let clocks = query_memory_clocks();
+    if !clocks.is_empty() {
+        let _ = MEMORY_CLOCKS.set(clocks.clone());
+    }
+    clocks
+}
+
+fn query_memory_clocks() -> Vec<u32> {
     let Ok(output) = Command::new("nvidia-smi")
         .args([
             "-i",
