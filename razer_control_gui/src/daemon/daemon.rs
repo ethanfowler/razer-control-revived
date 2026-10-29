@@ -50,6 +50,7 @@ lazy_static! {
 fn main() {
     setup_panic_hook();
     init_logging();
+    gpu::record_session_gpu_mode();
 
     if let Ok(mut d) = DEV_MANAGER.lock() {
         d.discover_devices();
@@ -440,6 +441,7 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                 gpus,
                 dgpu_runtime_pm: dgpu_rpm,
                 gpu_mode: tool.map_or("unknown".to_string(), gpu::get_gpu_mode),
+                gpu_mode_running: gpu::session_gpu_mode(),
                 gpu_mode_tool: tool.map(str::to_string),
             });
         }

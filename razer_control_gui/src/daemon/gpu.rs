@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use super::comms::GpuInfo;
 
@@ -178,6 +179,31 @@ pub fn get_gpu_mode(tool: &str) -> String {
         _ => "unknown",
     }
     .to_string()
+}
+
+static SESSION_GPU_MODE: OnceLock<String> = OnceLock::new();
+
+/// Remember the GPU mode selected when the daemon starts, which is when the
+/// session does, as the mode the session runs
+pub fn record_session_gpu_mode() {
+    if let Some(tool) = gpu_mode_tool() {
+        let _ = SESSION_GPU_MODE.set(get_gpu_mode(tool));
+    }
+}
+
+/// The GPU mode the session runs, which differs from the selected one until
+/// the next login or boot, or "unknown". A lingering user manager (e.g. an
+/// SSH session spanning a logout) can leave the recorded mode stale.
+pub fn session_gpu_mode() -> String {
+    // Without the NVIDIA driver loaded, only the integrated GPU is in use
+    if !Path::new("/sys/module/nvidia").exists() {
+        return "integrated".to_string();
+    }
+    match SESSION_GPU_MODE.get().map(String::as_str) {
+        // Selected before this boot's driver load, so not in effect yet
+        Some("integrated") | None => "unknown".to_string(),
+        Some(mode) => mode.to_string(),
+    }
 }
 
 /// What switching to a mode needs before it takes effect

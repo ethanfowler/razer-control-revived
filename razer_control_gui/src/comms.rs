@@ -203,6 +203,8 @@ pub enum DaemonResponse {
         dgpu_runtime_pm: bool,
         /// Selected mode: hybrid, integrated, nvidia or unknown
         gpu_mode: String,
+        /// The mode this session runs, until a logout or reboot applies gpu_mode
+        gpu_mode_running: String,
         /// The switcher in use (prime-select or envycontrol), if installed
         gpu_mode_tool: Option<String>,
     },

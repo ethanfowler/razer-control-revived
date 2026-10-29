@@ -856,6 +856,7 @@ fn read_gpu_status() {
             gpus,
             dgpu_runtime_pm,
             gpu_mode,
+            gpu_mode_running,
             gpu_mode_tool,
         }) => {
             println!("Detected GPUs:");
@@ -879,6 +880,10 @@ fn read_gpu_status() {
                 }
             );
             match gpu_mode_tool {
+                Some(tool) if gpu_mode != gpu_mode_running => println!(
+                    "GPU mode: {} selected ({}), running {} until the next login or boot",
+                    gpu_mode, tool, gpu_mode_running
+                ),
                 Some(tool) => println!("GPU mode: {} ({})", gpu_mode, tool),
                 None => println!("GPU mode: no switcher (prime-select or envycontrol) installed"),
             }

@@ -30,9 +30,19 @@ fn send_data(opt: comms::DaemonCommand) -> Option<comms::DaemonResponse> {
     }
 }
 
-/// GPUs, whether dGPU runtime PM is on, the selected GPU mode and the
-/// switcher that sets it, if one is installed
-fn get_gpu_status() -> Option<(Vec<comms::GpuInfo>, bool, String, Option<String>)> {
+struct GpuStatus {
+    gpus: Vec<comms::GpuInfo>,
+    /// Whether the dGPU may power down when idle (runtime PM "auto")
+    runtime_pm: bool,
+    /// GPU modes (hybrid, integrated, nvidia or unknown): the one selected,
+    /// and the one running until a logout or reboot applies it
+    selected: String,
+    running: String,
+    /// The switcher, prime-select or envycontrol, if one is installed
+    tool: Option<String>,
+}
+
+fn get_gpu_status() -> Option<GpuStatus> {
     let response = send_data(comms::DaemonCommand::GetGpuStatus)?;
     use comms::DaemonResponse::*;
     match response {
@@ -40,22 +50,17 @@ fn get_gpu_status() -> Option<(Vec<comms::GpuInfo>, bool, String, Option<String>
             gpus,
             dgpu_runtime_pm,
             gpu_mode,
+            gpu_mode_running,
             gpu_mode_tool,
-        } => Some((gpus, dgpu_runtime_pm, gpu_mode, gpu_mode_tool)),
+        } => Some(GpuStatus {
+            gpus,
+            runtime_pm: dgpu_runtime_pm,
+            selected: gpu_mode,
+            running: gpu_mode_running,
+            tool: gpu_mode_tool,
+        }),
         response => {
             println!("Instead of GetGpuStatus got {response:?}");
-            None
-        }
-    }
-}
-
-fn set_dgpu_runtime_pm(enabled: bool) -> Option<bool> {
-    let response = send_data(comms::DaemonCommand::SetDgpuRuntimePM { enabled })?;
-    use comms::DaemonResponse::*;
-    match response {
-        SetDgpuRuntimePM { result } => Some(result),
-        response => {
-            println!("Instead of SetDgpuRuntimePM got {response:?}");
             None
         }
     }
@@ -902,8 +907,8 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
     let mut igpu_label = "iGPU".to_string();
     let mut dgpu_label = "dGPU".to_string();
 
-    if let Some((gpu_list, _, _, _)) = get_gpu_status() {
-        for gpu_info in gpu_list {
+    if let Some(status) = get_gpu_status() {
+        for gpu_info in status.gpus {
             let name = gpu_info.name;
             // Heuristic: NVIDIA/Discrete usually dGPU; AMD/Intel usually iGPU (unless discrete)
             if name.to_uppercase().contains("NVIDIA") {
@@ -1429,8 +1434,14 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     let toggle_section = settings_page.add_section(None);
     toggle_section.add_row(&toggle_box);
 
+    // Sections following the AC/Battery switch, labelled with its choice
+    let profile_groups: Rc<std::cell::RefCell<Vec<adw::PreferencesGroup>>> = Rc::default();
+
     // --- Power Profile section ---
     let power_section = settings_page.add_section(Some("Power Profile"));
+    profile_groups
+        .borrow_mut()
+        .push(power_section.group.clone());
 
     let initial_ac = is_ac.get();
     let power = get_power(initial_ac);
@@ -1550,6 +1561,8 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
 
     // --- Cooling section ---
     let fan_section = settings_page.add_section(Some("Cooling"));
+    profile_groups.borrow_mut().push(fan_section.group.clone());
+    label_profile_groups(&profile_groups.borrow(), initial_ac);
 
     let fan_speed = get_fan_speed(initial_ac).unwrap_or(0);
     let min_fan_speed = *device.fan.get(0).unwrap_or(&0) as f64;
@@ -1597,9 +1610,11 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let graphics_cap_combo = graphics_cap_combo.clone();
         let memory_cap_combo = memory_cap_combo.clone();
         let memory_caps = memory_caps.clone();
+        let profile_groups = profile_groups.clone();
         move || {
             refreshing.set(true);
             let ac = is_ac.get();
+            label_profile_groups(&profile_groups.borrow(), ac);
             if let Some((graphics, memory, _)) = get_gpu_clock_limit(ac) {
                 graphics_cap_combo.set_selected(clock_cap_index(graphics, &GPU_GRAPHICS_CAPS));
                 memory_cap_combo.set_selected(clock_cap_index(memory, &memory_caps));
@@ -1870,92 +1885,148 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     }
 
     // -----------------------------------------------------------------------
-    // GPU sections (merged from former GPU page)
+    // GPU sections: the mode first, as it decides whether the rest apply
     // -----------------------------------------------------------------------
     let gpu_refreshing = Rc::new(Cell::new(false));
     let gpu_cooldown = Rc::new(Cell::new(false));
     let gpu_status = get_gpu_status();
-
-    // --- Detected GPUs ---
-    let gpu_section = settings_page.add_section(Some("Detected GPUs"));
-    let gpu_rows: Vec<adw::ActionRow> = if let Some((ref gpus, _, _, _)) = gpu_status {
-        gpus.iter()
-            .map(|gpu| {
-                let row = adw::ActionRow::new();
-                row.set_title(&gpu.name);
-                let type_label = if gpu.gpu_type == "dgpu" {
-                    "Discrete"
-                } else {
-                    "Integrated"
-                };
-                row.set_subtitle(&format!(
-                    "{} \u{00B7} {} \u{00B7} {} \u{00B7} {}",
-                    type_label, gpu.pci_slot, gpu.driver, gpu.runtime_status
-                ));
-                gpu_section.add_row(&row);
-                row
-            })
-            .collect()
-    } else {
-        let row = adw::ActionRow::new();
-        row.set_title("No GPUs detected");
-        row.set_subtitle("Could not query GPU information from daemon");
-        gpu_section.add_row(&row);
-        vec![row]
-    };
-
-    // --- dGPU Runtime Power ---
     let has_dgpu = gpu_status
         .as_ref()
-        .is_some_and(|(gpus, _, _, _)| gpus.iter().any(|g| g.gpu_type == "dgpu"));
-    let dgpu_rpm_active = gpu_status.as_ref().is_some_and(|(_, rpm, _, _)| *rpm);
+        .is_some_and(|s| s.gpus.iter().any(|g| g.gpu_type == "dgpu"));
+    // Integrated Only unloads the NVIDIA driver, so no other GPU setting applies
+    let nvidia_off = gpu_status
+        .as_ref()
+        .is_some_and(|s| s.running == "integrated");
 
-    let rpm_section = settings_page.add_section(Some("dGPU Runtime Power"));
-    let rpm_switch = make_switch_row(
-        "Suspend dGPU",
-        "Allow the discrete GPU to power down when idle (instant, no reboot)",
-        dgpu_rpm_active,
-    );
-    rpm_section.add_row(&rpm_switch);
+    // --- GPU Mode ---
+    let mode_section = settings_page.add_section(Some("GPU Mode"));
+    mode_section.group.set_description(Some(ALL_PROFILES));
+    let dgpu_row = adw::ActionRow::new();
+    dgpu_row.set_title("NVIDIA GPU");
+    let pending_row = adw::ActionRow::new();
+    pending_row.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
+    // A switch in progress, until the selected mode reports the new one
+    let switching: Rc<std::cell::RefCell<Option<String>>> = Rc::new(std::cell::RefCell::new(None));
 
-    if !has_dgpu {
-        rpm_switch.set_sensitive(false);
-        rpm_switch.set_subtitle("No discrete GPU detected");
-    }
-
-    // dGPU switch callback — with cooldown to prevent live-sync from reverting
-    {
-        let gpu_refreshing = gpu_refreshing.clone();
-        let gpu_cooldown = gpu_cooldown.clone();
-        rpm_switch.connect_active_notify(move |sw| {
-            if gpu_refreshing.get() {
-                return;
+    // Updates the status rows and the Apply button from the daemon's status
+    let show_gpu_mode: ShowGpuMode = {
+        let dgpu_row = dgpu_row.clone();
+        let pending_row = pending_row.clone();
+        let switching = switching.clone();
+        Rc::new(move |status, apply, chosen| {
+            dgpu_row.set_subtitle(&dgpu_status_text(status));
+            if switching.borrow().as_deref() == Some(status.selected.as_str()) {
+                *switching.borrow_mut() = None;
             }
-            set_dgpu_runtime_pm(sw.is_active());
-            // Set cooldown so the live-sync skips the next few polls
-            gpu_cooldown.set(true);
-            let cd = gpu_cooldown.clone();
-            glib::timeout_add_local_once(Duration::from_secs(4), move || {
-                cd.set(false);
+            let (title, subtitle) = match switching.borrow().as_deref() {
+                Some(mode) => (
+                    format!("Switching to {}", gpu_mode_label(mode)),
+                    "This can take a minute; a notification says when it's done".to_string(),
+                ),
+                None => pending_gpu_mode(&status.selected, &status.running).unwrap_or_default(),
+            };
+            pending_row.set_visible(!title.is_empty());
+            pending_row.set_title(&title);
+            pending_row.set_subtitle(&subtitle);
+            // Only offered once a different mode is chosen
+            if let Some(apply) = apply {
+                apply.set_visible(
+                    switching.borrow().is_none() && GPU_MODES[chosen as usize] != status.selected,
+                );
+            }
+        })
+    };
+
+    let mode_combo = if let Some(ref status) = gpu_status
+        && let Some(ref tool) = status.tool
+    {
+        let mode_idx = GPU_MODES
+            .iter()
+            .position(|m| *m == status.selected)
+            .unwrap_or(0) as u32;
+        let mode_combo = make_combo_row(
+            "Mode",
+            gpu_mode_description(mode_idx),
+            &GPU_MODES.map(gpu_mode_label),
+            mode_idx,
+        );
+        mode_combo.set_tooltip_text(Some(&format!("Switched with {tool}")));
+        let apply = gtk::Button::with_label("Apply");
+        apply.set_valign(gtk::Align::Center);
+        apply.add_css_class("suggested-action");
+        mode_combo.add_suffix(&apply);
+        mode_section.add_row(&mode_combo);
+        mode_section.add_row(&pending_row);
+        show_gpu_mode(status, Some(&apply), mode_idx);
+
+        // Choosing only describes a mode; Apply switches, as switching
+        // rebuilds the initramfs and changes the next login's desktop
+        {
+            let apply = apply.clone();
+            let show_gpu_mode = show_gpu_mode.clone();
+            mode_combo.connect_selected_notify(move |c| {
+                c.set_subtitle(gpu_mode_description(c.selected()));
+                if let Some(status) = get_gpu_status() {
+                    show_gpu_mode(&status, Some(&apply), c.selected());
+                }
             });
-        });
+        }
+        {
+            let mode_combo = mode_combo.clone();
+            let switching = switching.clone();
+            let show_gpu_mode = show_gpu_mode.clone();
+            apply.connect_clicked(move |button| {
+                let mode = GPU_MODES[mode_combo.selected() as usize];
+                match set_gpu_mode(mode) {
+                    Some((true, _)) => *switching.borrow_mut() = Some(mode.to_string()),
+                    Some((false, msg)) => show_toast(button, &format!("Failed: {msg}")),
+                    None => show_toast(button, "Failed to communicate with daemon"),
+                }
+                if let Some(status) = get_gpu_status() {
+                    show_gpu_mode(&status, Some(button), mode_combo.selected());
+                }
+                // A failed switch is reported by notification; stop waiting
+                let switching = switching.clone();
+                glib::timeout_add_local_once(Duration::from_secs(180), move || {
+                    *switching.borrow_mut() = None;
+                });
+            });
+        }
+        Some((mode_combo, apply))
+    } else {
+        let row = adw::ActionRow::new();
+        row.set_title("GPU Mode");
+        row.set_subtitle(
+            "Install nvidia-prime (prime-select) or envycontrol to switch between the integrated and NVIDIA GPUs",
+        );
+        mode_section.add_row(&row);
+        if let Some(ref status) = gpu_status {
+            show_gpu_mode(status, None, 0);
+        }
+        None
+    };
+    if has_dgpu {
+        mode_section.add_row(&dgpu_row);
     }
 
-    // --- NVIDIA Dynamic Boost (nvidia-powerd) ---
-    let powerd = get_nvidia_powerd();
+    // --- GPU Power: clock caps, per profile ---
     let has_gpu_clocks = !memory_caps.is_empty();
-    let gpu_power_section =
-        (has_dgpu || has_gpu_clocks).then(|| settings_page.add_section(Some("GPU Power")));
-    if let Some(ref section) = gpu_power_section
-        && has_gpu_clocks
-    {
-        section.add_row(&graphics_cap_combo);
-        section.add_row(&memory_cap_combo);
+    if has_gpu_clocks && !nvidia_off {
+        let clocks_section = settings_page.add_section(Some("GPU Power"));
+        clocks_section.add_row(&graphics_cap_combo);
+        clocks_section.add_row(&memory_cap_combo);
+        profile_groups
+            .borrow_mut()
+            .push(clocks_section.group.clone());
+        label_profile_groups(&profile_groups.borrow(), initial_ac);
     }
-    let boost_switch = if let Some(ref boost_section) = gpu_power_section
-        && has_dgpu
-        && powerd.is_some_and(|(available, _)| available)
+
+    // --- NVIDIA Dynamic Boost (nvidia-powerd), for every profile ---
+    let powerd = get_nvidia_powerd();
+    let boost_switch = if has_dgpu && !nvidia_off && powerd.is_some_and(|(available, _)| available)
     {
+        let boost_section = settings_page.add_section(Some("Dynamic Boost"));
+        boost_section.group.set_description(Some(ALL_PROFILES));
         let switch = make_switch_row(
             "Dynamic Boost",
             "Run nvidia-powerd, which raises the GPU power limit per power mode. Off keeps the base limit and is quieter",
@@ -1986,105 +2057,27 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         None
     };
 
-    // --- GPU mode, via prime-select or envycontrol ---
-    let gpu_mode_tool = gpu_status.as_ref().and_then(|(_, _, _, tool)| tool.clone());
-    let gpu_mode = gpu_status
-        .as_ref()
-        .map_or("unknown".to_string(), |(_, _, mode, _)| mode.clone());
-
-    let ec_section = settings_page.add_section(Some("GPU Mode"));
-
-    if let Some(tool) = gpu_mode_tool {
-        let mode_idx = match gpu_mode.as_str() {
-            "hybrid" => 0u32,
-            "integrated" => 1,
-            "nvidia" => 2,
-            _ => 0,
-        };
-
-        let mode_combo = make_combo_row(
-            "GPU Mode",
-            gpu_mode_description(mode_idx),
-            &["Hybrid", "Integrated Only", "NVIDIA Only"],
-            mode_idx,
-        );
-        ec_section.add_row(&mode_combo);
-
-        let info_label = gtk::Label::new(Some(&format!(
-            "Switched with {tool}, which can take a minute; a notification says when it's done. \
-             Hybrid and NVIDIA Only apply after logging out, Integrated Only after a restart."
-        )));
-        info_label.set_wrap(true);
-        info_label.add_css_class("dim-label");
-        info_label.add_css_class("caption");
-        info_label.set_margin_top(4);
-        info_label.set_margin_bottom(8);
-        info_label.set_margin_start(12);
-        info_label.set_margin_end(12);
-        ec_section.add_row(&info_label);
-
-        // Auto-apply callback on selection change
-        {
-            let mode_combo = mode_combo.clone();
-            let gpu_refreshing = gpu_refreshing.clone();
-
-            // Capture a weak reference or solve the root access differently.
-            // We can't capture the widget itself and use it easily if we also clone it?
-            // construct logic inside.
-
-            mode_combo.clone().connect_selected_notify(move |c| {
-                // Update subtitle
-                c.set_subtitle(gpu_mode_description(c.selected()));
-
-                if gpu_refreshing.get() {
-                    return;
-                }
-
-                let mode_str = match c.selected() {
-                    0 => "hybrid",
-                    1 => "integrated",
-                    2 => "nvidia",
-                    _ => "hybrid",
-                };
-                let mode_owned = mode_str.to_string();
-
-                // Attempt to find toast overlay
-                let overlay_ref: Option<adw::ToastOverlay> = c
-                    .root()
-                    .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
-                    .and_then(|w| w.content())
-                    .and_then(|c| c.downcast::<adw::ToastOverlay>().ok());
-
-                // Perform the action
-                let (msg, timeout) = match set_gpu_mode(&mode_owned) {
-                    Some((true, msg)) => (msg, 4),
-                    Some((false, msg)) => (format!("Failed: {}", msg), 4),
-                    None => ("Failed to communicate with daemon".to_string(), 4),
-                };
-
-                // Show toast
-                if let Some(ref o) = overlay_ref {
-                    let toast = adw::Toast::new(&msg);
-                    toast.set_timeout(timeout);
-                    o.add_toast(toast);
-                } else {
-                    // Fallback to stderr if UI not ready (unlikely)
-                    eprintln!("{}", msg);
-                }
-            });
-        }
+    // --- Detected GPUs: information, so last ---
+    let gpu_section = settings_page.add_section(Some("Detected GPUs"));
+    let gpu_rows: Vec<adw::ActionRow> = if let Some(ref status) = gpu_status {
+        status
+            .gpus
+            .iter()
+            .map(|gpu| {
+                let row = adw::ActionRow::new();
+                row.set_title(&gpu.name);
+                row.set_subtitle(&gpu_info_text(gpu));
+                gpu_section.add_row(&row);
+                row
+            })
+            .collect()
     } else {
-        let info_label = gtk::Label::new(Some(
-            "Install nvidia-prime (prime-select) or envycontrol to switch between the integrated and NVIDIA GPUs.",
-        ));
-        info_label.set_wrap(true);
-        info_label.add_css_class("dim-label");
-        info_label.set_margin_top(12);
-        info_label.set_margin_bottom(12);
-        info_label.set_margin_start(12);
-        info_label.set_margin_end(12);
-        ec_section.add_row(&info_label);
-    }
+        let row = adw::ActionRow::new();
+        row.set_title("No GPUs detected");
+        row.set_subtitle("Could not query GPU information from daemon");
+        gpu_section.add_row(&row);
+        vec![row]
+    };
 
     // -----------------------------------------------------------------------
     // Combined live-sync: poll performance + GPU every 2s
@@ -2093,35 +2086,29 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let refresh = refresh.clone();
         let gpu_refreshing = gpu_refreshing.clone();
         let gpu_cooldown = gpu_cooldown.clone();
-        let rpm_switch = rpm_switch.clone();
         let gpu_rows = gpu_rows.clone();
         glib::timeout_add_local(Duration::from_secs(2), move || {
             // Performance refresh
             refresh();
 
-            // GPU refresh (skip if user just toggled the switch)
+            // GPU refresh (skip if user just toggled a switch)
             if !gpu_cooldown.get()
-                && let Some((gpus, dgpu_rpm, _, _)) = get_gpu_status()
+                && let Some(status) = get_gpu_status()
             {
                 gpu_refreshing.set(true);
-                rpm_switch.set_active(dgpu_rpm);
+                match mode_combo {
+                    Some((ref combo, ref apply)) => {
+                        show_gpu_mode(&status, Some(apply), combo.selected())
+                    }
+                    None => show_gpu_mode(&status, None, 0),
+                }
                 if let Some(ref boost_switch) = boost_switch
                     && let Some((_, active)) = get_nvidia_powerd()
                 {
                     boost_switch.set_active(active);
                 }
-                for (i, row) in gpu_rows.iter().enumerate() {
-                    if let Some(gpu) = gpus.get(i) {
-                        let type_label = if gpu.gpu_type == "dgpu" {
-                            "Discrete"
-                        } else {
-                            "Integrated"
-                        };
-                        row.set_subtitle(&format!(
-                            "{} \u{00B7} {} \u{00B7} {} \u{00B7} {}",
-                            type_label, gpu.pci_slot, gpu.driver, gpu.runtime_status
-                        ));
-                    }
+                for (row, gpu) in gpu_rows.iter().zip(&status.gpus) {
+                    row.set_subtitle(&gpu_info_text(gpu));
                 }
                 gpu_refreshing.set(false);
             }
@@ -2472,11 +2459,93 @@ fn make_battery_page() -> SettingsPage {
     page
 }
 
+/// GPU modes in the GPU Mode list's order
+const GPU_MODES: [&str; 3] = ["hybrid", "integrated", "nvidia"];
+
+fn gpu_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "hybrid" => "Hybrid",
+        "integrated" => "Integrated Only",
+        "nvidia" => "NVIDIA Only",
+        _ => "Unknown",
+    }
+}
+
+/// The title and subtitle saying a selected GPU mode isn't running yet, or
+/// None once it is
+fn pending_gpu_mode(selected: &str, running: &str) -> Option<(String, String)> {
+    if selected == "unknown" || selected == running {
+        return None;
+    }
+    // The NVIDIA driver only loads or unloads at boot
+    let how = if selected == "integrated" || running == "integrated" {
+        "Restart"
+    } else {
+        "Log out and back in"
+    };
+    let from = match running {
+        "unknown" => String::new(),
+        mode => format!(", switching from {}", gpu_mode_label(mode)),
+    };
+    Some((
+        format!("{} selected", gpu_mode_label(selected)),
+        format!("{how} to apply{from}"),
+    ))
+}
+
+/// Whether the NVIDIA GPU is powered, and what keeps it awake
+fn dgpu_status_text(status: &GpuStatus) -> String {
+    let Some(dgpu) = status.gpus.iter().find(|g| g.gpu_type == "dgpu") else {
+        return "Not detected".to_string();
+    };
+    match dgpu.runtime_status.as_str() {
+        "suspended" => "Powered off".to_string(),
+        _ if status.running == "nvidia" => {
+            "Active: it runs the desktop in NVIDIA Only mode".to_string()
+        }
+        _ if !status.runtime_pm => {
+            "Active: power management is off, so it never powers down".to_string()
+        }
+        "active" => "Active: in use, or about to power down".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn gpu_info_text(gpu: &comms::GpuInfo) -> String {
+    let kind = if gpu.gpu_type == "dgpu" {
+        "Discrete"
+    } else {
+        "Integrated"
+    };
+    format!(
+        "{} \u{00B7} {} \u{00B7} {} \u{00B7} {}",
+        kind, gpu.pci_slot, gpu.driver, gpu.runtime_status
+    )
+}
+
+/// Updates the GPU Mode section from a status, with its Apply button (if
+/// there's a switcher) and the mode chosen in the list
+type ShowGpuMode = Rc<dyn Fn(&GpuStatus, Option<&gtk::Button>, u32)>;
+
+const ALL_PROFILES: &str = "Applies on AC power and battery";
+
+/// Say which profile the AC/Battery switch has these sections showing
+fn label_profile_groups(groups: &[adw::PreferencesGroup], ac: bool) {
+    let label = if ac {
+        "Applies on AC power"
+    } else {
+        "Applies on battery"
+    };
+    for group in groups {
+        group.set_description(Some(label));
+    }
+}
+
 fn gpu_mode_description(index: u32) -> &'static str {
     match index {
-        0 => "Intel runs the desktop; the NVIDIA GPU powers down when idle",
-        1 => "NVIDIA GPU switched off entirely. Longest battery life",
-        2 => "NVIDIA GPU runs everything and never sleeps. Highest idle power",
+        0 => "Intel runs the desktop; NVIDIA sleeps when idle",
+        1 => "NVIDIA switched off. Longest battery life",
+        2 => "NVIDIA runs everything and never sleeps",
         _ => "",
     }
 }
@@ -2663,4 +2732,35 @@ fn make_about_page(device: SupportedDevice) -> SettingsPage {
     desc_box.append(&description);
     section.add_row(&desc_box);
     page
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_mode_pending_until_running() {
+        assert_eq!(pending_gpu_mode("nvidia", "nvidia"), None);
+        assert_eq!(pending_gpu_mode("unknown", "nvidia"), None);
+        assert_eq!(
+            pending_gpu_mode("hybrid", "nvidia"),
+            Some((
+                "Hybrid selected".to_string(),
+                "Log out and back in to apply, switching from NVIDIA Only".to_string()
+            ))
+        );
+        // The NVIDIA driver only loads or unloads at boot
+        assert_eq!(
+            pending_gpu_mode("integrated", "hybrid").map(|(_, how)| how),
+            Some("Restart to apply, switching from Hybrid".to_string())
+        );
+        assert_eq!(
+            pending_gpu_mode("hybrid", "integrated").map(|(_, how)| how),
+            Some("Restart to apply, switching from Integrated Only".to_string())
+        );
+        assert_eq!(
+            pending_gpu_mode("nvidia", "unknown").map(|(_, how)| how),
+            Some("Log out and back in to apply".to_string())
+        );
+    }
 }
