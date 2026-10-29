@@ -59,6 +59,33 @@ Fan curves · Power profiles · CPU/GPU boost · Battery health · RGB effects �
 
 ---
 
+## 🔋 This Fork: Power Controls (Blade 16 2023)
+
+This fork adds controls for keeping the Blade 16 2023 (RZ09-0483, i9-13950HX, RTX 4070) quiet. They should work on other Intel + NVIDIA Blades too, but that hasn't been tested.
+
+**Install (Ubuntu 24.04):** download the `.deb` from [this fork's releases](https://github.com/ethanfowler/razer-control-revived/releases), then:
+
+```bash
+sudo apt install ./razercontrol-revived_0.3.6+blade16.1_amd64.deb
+```
+
+The daemon starts straight away. Open **Razer Settings** from the app menu. You don't need to log out or reboot.
+
+| Control | Where | What it does |
+|---|---|---|
+| CPU power limit | Power Profile → *CPU Power Limit* | Sets the CPU package power limits (RAPL PL1/PL2). By default each power mode applies its own limits, for example Silent 25/45 W and Balanced 55/115 W. Move the slider to fix the limit for the AC or battery profile regardless of the mode; the left end means *follow the power mode*. |
+| CPU turbo | Power Profile → *CPU Turbo Boost* | Turns Intel turbo on or off for each profile. Off caps the clock at base frequency, which stops short bursts from spinning the fans up. |
+| GPU clock limits | GPU Power → *Graphics / Memory Clock Limit* | Caps the NVIDIA clocks. Laptop GPUs ignore `nvidia-smi -pl`, but clock caps still work: 1200 MHz graphics with 810 MHz memory drew about 16 W instead of 22 W at light load, with no stutter. |
+| Dynamic Boost | GPU Power → *Dynamic Boost* | Starts or stops `nvidia-powerd`. It can only raise the GPU's power limit above the 80 W base, so leave it off for quiet. |
+
+Everything is also available from the CLI: `razer-cli read|write cpu-limit`, `turbo`, `gpu-clocks` and `dynamic-boost`.
+
+**How it works:** these settings need root, but the daemon runs as your user. It applies them through a small helper, `/usr/libexec/razercontrol/razer-helper`, which only accepts bounded values. The helper's polkit policy lets the user at the machine run it without a password; remote and inactive sessions must authenticate as an admin. GPU clock caps are dropped when the GPU suspends, and the daemon reapplies them after wake.
+
+**From source:** run `./install-local.sh`. It needs Rust ≥ 1.85 from [rustup](https://rustup.rs/), because Ubuntu's `rustc` is too old, and the [build dependencies](#️-build-dependencies).
+
+---
+
 ## 📥 Download & Install
 
 <div align="center">

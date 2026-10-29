@@ -3,3 +3,4 @@ razer_control_gui/target/
 
 # Release binaries (use GitHub Releases, not the repo)
 *.rpm
+*.deb
