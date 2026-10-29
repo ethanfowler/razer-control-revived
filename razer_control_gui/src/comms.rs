@@ -328,12 +328,13 @@ pub fn send_to_daemon(command: DaemonCommand, mut sock: UnixStream) -> Option<Da
 /// a `DaemonResponse`. None is returned if deserializing failed
 fn read_from_socked_resp(bytes: &[u8]) -> Option<DaemonResponse> {
     match bincode::deserialize::<DaemonResponse>(bytes) {
+        // stderr, so it doesn't mix with output meant for scripts
         Ok(res) => {
-            println!("RES: {:?}", res);
+            eprintln!("RES: {:?}", res);
             Some(res)
         }
         Err(e) => {
-            println!("RES ERROR: {}", e);
+            eprintln!("RES ERROR: {}", e);
             None
         }
     }
@@ -345,7 +346,12 @@ fn read_from_socked_resp(bytes: &[u8]) -> Option<DaemonResponse> {
 pub fn read_from_socket_req(bytes: &[u8]) -> Option<DaemonCommand> {
     match bincode::deserialize::<DaemonCommand>(bytes) {
         Ok(res) => {
-            println!("REQ: {:?}", res);
+            // Reads are polled every few seconds by the GUI and monitors, so
+            // only log changes
+            let request = format!("{:?}", res);
+            if !request.starts_with("Get") {
+                println!("REQ: {}", request);
+            }
             Some(res)
         }
         Err(e) => {

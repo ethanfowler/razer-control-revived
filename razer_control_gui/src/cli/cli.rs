@@ -35,6 +35,13 @@ enum Args {
         #[command(subcommand)]
         effect: Effect,
     },
+    /// Print live status as one JSON object per line, for scripts and the
+    /// GNOME extension, until stdout closes
+    Monitor {
+        /// Milliseconds between lines
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(200..))]
+        interval_ms: u64,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -358,6 +365,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.args {
+        Args::Monitor { interval_ms } => monitor(interval_ms),
         Args::Read { attr } => match attr {
             ReadAttr::Fan(AcStateParam { ac_state }) => read_fan_rpm(ac_state.as_index()),
             ReadAttr::Power(AcStateParam { ac_state }) => read_power_mode(ac_state.as_index()),
@@ -1057,5 +1065,70 @@ fn write_gpu_mode(mode: &str) {
         }
         Some(_) => eprintln!("Daemon responded with invalid data!"),
         None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+const POWER_MODES: [&str; 5] = ["Balanced", "Gaming", "Creator", "Silent", "Custom"];
+
+/// Whether mains power is connected, from the first Mains power supply
+fn on_ac() -> Option<bool> {
+    std::fs::read_dir("/sys/class/power_supply")
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            std::fs::read_to_string(path.join("type")).is_ok_and(|kind| kind.trim() == "Mains")
+        })
+        .and_then(|path| std::fs::read_to_string(path.join("online")).ok())
+        .map(|online| online.trim() == "1")
+}
+
+/// The active profile's state, as JSON. Fields the daemon can't report are null.
+fn monitor_status() -> serde_json::Value {
+    let ac = on_ac();
+    // The daemon's profiles are indexed 0 battery, 1 AC
+    let profile = usize::from(ac.unwrap_or(true));
+    let mode = match send_data(comms::DaemonCommand::GetPwrLevel { ac: profile }) {
+        Some(comms::DaemonResponse::GetPwrLevel { pwr }) => Some(pwr),
+        _ => None,
+    };
+    let (cpu_limit, cpu_limit_fixed) =
+        match send_data(comms::DaemonCommand::GetCpuPowerLimit { ac: profile }) {
+            Some(comms::DaemonResponse::GetCpuPowerLimit { fixed, applied }) => {
+                (applied, Some(fixed.is_some()))
+            }
+            _ => (None, None),
+        };
+    let fan_rpm = match send_data(comms::DaemonCommand::GetLiveFanRpm) {
+        Some(comms::DaemonResponse::GetLiveFanRpm { rpms }) => Some(rpms),
+        _ => None,
+    };
+    let fan_target = match send_data(comms::DaemonCommand::GetFanSpeed { ac: profile }) {
+        Some(comms::DaemonResponse::GetFanSpeed { rpm }) => Some(rpm),
+        _ => None,
+    };
+    serde_json::json!({
+        "ac": ac,
+        "power_mode": mode.and_then(|m| POWER_MODES.get(usize::from(m))),
+        "cpu_limit": cpu_limit,
+        "cpu_limit_fixed": cpu_limit_fixed,
+        "fan_rpm": fan_rpm,
+        // 0 is automatic
+        "fan_target": fan_target,
+    })
+}
+
+fn monitor(interval_ms: u64) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    loop {
+        if writeln!(stdout, "{}", monitor_status())
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
+            // The reader went away
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     }
 }
