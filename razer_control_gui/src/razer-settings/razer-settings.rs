@@ -217,8 +217,7 @@ fn set_nvidia_powerd(enabled: bool) -> Option<(bool, String)> {
     }
 }
 
-/// Slider notches for a fixed CPU power limit: (PL1, PL2) in watts. Notch 0
-/// is "Auto", which follows the power mode.
+/// Slider notches for an overridden CPU power limit: (PL1, PL2) in watts
 const CPU_LIMIT_NOTCHES: [(u32, u32); 8] = [
     (15, 25),
     (25, 45),
@@ -230,17 +229,16 @@ const CPU_LIMIT_NOTCHES: [(u32, u32); 8] = [
     (120, 160),
 ];
 
-/// Slider position for a fixed limit: the notch with the closest PL1
-fn cpu_limit_notch(fixed: Option<(u32, u32)>) -> f64 {
-    let Some((pl1, _)) = fixed else {
+/// Slider position for a limit: the notch with the closest PL1
+fn cpu_limit_notch(limit: Option<(u32, u32)>) -> f64 {
+    let Some((pl1, _)) = limit else {
         return 0.0;
     };
-    let index = CPU_LIMIT_NOTCHES
+    CPU_LIMIT_NOTCHES
         .iter()
         .enumerate()
         .min_by_key(|(_, (notch, _))| notch.abs_diff(pl1))
-        .map_or(0, |(i, _)| i);
-    (index + 1) as f64
+        .map_or(0, |(i, _)| i) as f64
 }
 
 fn cpu_limit_description(state: Option<CpuPowerLimitState>) -> String {
@@ -249,9 +247,9 @@ fn cpu_limit_description(state: Option<CpuPowerLimitState>) -> String {
             format!("Fixed in every power mode: {pl1} W sustained, {pl2} W burst")
         }
         Some((None, Some((pl1, pl2)))) => {
-            format!("Auto, following the power mode: {pl1} W sustained, {pl2} W burst")
+            format!("From the power mode: {pl1} W sustained, {pl2} W burst")
         }
-        _ => "Auto, following the power mode".to_string(),
+        _ => "From the power mode".to_string(),
     }
 }
 
@@ -1482,22 +1480,48 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
     turbo_switch.set_visible(turbo.is_some_and(|(available, _)| available));
     power_section.add_row(&turbo_switch);
 
-    let cpu_limit = get_cpu_power_limit(initial_ac);
+    let cpu_limit_override = make_switch_row(
+        "Override CPU Power Limit",
+        "Use the slider's limit in every power mode, instead of the mode's own",
+        false,
+    );
+    power_section.add_row(&cpu_limit_override);
+    // Not empty, which would hide the subtitle; show_cpu_limit fills it in
     let cpu_limit_slider = SliderRow::new(
         "CPU Power Limit",
-        &cpu_limit_description(cpu_limit),
+        &cpu_limit_description(None),
         0.0,
-        CPU_LIMIT_NOTCHES.len() as f64,
+        (CPU_LIMIT_NOTCHES.len() - 1) as f64,
         1.0,
-        cpu_limit_notch(cpu_limit.and_then(|l| l.0)),
+        0.0,
     );
     cpu_limit_slider.scale.set_round_digits(0);
     cpu_limit_slider.scale.set_draw_value(false);
-    cpu_limit_slider.add_mark(0.0, Some("Auto"));
     for (i, (pl1, _)) in CPU_LIMIT_NOTCHES.iter().enumerate() {
-        cpu_limit_slider.add_mark((i + 1) as f64, Some(&format!("{pl1} W")));
+        cpu_limit_slider.add_mark(i as f64, Some(&format!("{pl1} W")));
     }
     power_section.add_row(&cpu_limit_slider.container);
+
+    // Shows a profile's CPU power limit. Without the override the slider is
+    // greyed out and follows whatever the power mode applies, so it's called
+    // after anything that can change that.
+    let show_cpu_limit = {
+        let refreshing = refreshing.clone();
+        let switch = cpu_limit_override.clone();
+        let scale = cpu_limit_slider.scale.clone();
+        let subtitle = cpu_limit_slider.subtitle.clone();
+        Rc::new(move |ac: bool| {
+            let state = get_cpu_power_limit(ac);
+            let (fixed, applied) = state.unwrap_or_default();
+            let was_refreshing = refreshing.replace(true);
+            switch.set_active(fixed.is_some());
+            scale.set_sensitive(fixed.is_some());
+            scale.set_value(cpu_limit_notch(fixed.or(applied)));
+            subtitle.set_label(&cpu_limit_description(state));
+            refreshing.set(was_refreshing);
+        })
+    };
+    show_cpu_limit(initial_ac);
 
     // GPU clock caps: built here so the page refresh can update them, and
     // added to the GPU Power section further down
@@ -1571,8 +1595,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let fan_switch = fan_switch.clone();
         let fan_scale = fan_slider.scale.clone();
         let min_fan = min_fan_speed;
-        let cpu_limit_scale = cpu_limit_slider.scale.clone();
-        let cpu_limit_subtitle = cpu_limit_slider.subtitle.clone();
+        let show_cpu_limit = show_cpu_limit.clone();
         let turbo_switch = turbo_switch.clone();
         let graphics_cap_combo = graphics_cap_combo.clone();
         let memory_cap_combo = memory_cap_combo.clone();
@@ -1587,9 +1610,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
             if let Some((_, enabled)) = get_turbo(ac) {
                 turbo_switch.set_active(enabled);
             }
-            let cpu_limit = get_cpu_power_limit(ac);
-            cpu_limit_scale.set_value(cpu_limit_notch(cpu_limit.and_then(|l| l.0)));
-            cpu_limit_subtitle.set_label(&cpu_limit_description(cpu_limit));
+            show_cpu_limit(ac);
             if let Some(pwr) = get_power(ac) {
                 power_combo.set_selected(pwr.0 as u32);
                 power_combo.set_subtitle(profile_description(pwr.0 as u32));
@@ -1644,6 +1665,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let refreshing = refreshing.clone();
         let cpu_combo = cpu_combo.clone();
         let gpu_combo = gpu_combo.clone();
+        let show_cpu_limit = show_cpu_limit.clone();
         power_combo.connect_selected_notify(glib::clone!(
             #[weak]
             cpu_combo,
@@ -1659,6 +1681,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
                 let gpu = gpu_combo.selected() as u8;
                 set_power(ac, (profile, cpu, gpu));
                 pp.set_subtitle(profile_description(profile as u32));
+                show_cpu_limit(ac);
                 let show = profile == 4;
                 cpu_combo.set_visible(show);
                 gpu_combo.set_visible(show);
@@ -1671,6 +1694,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         let refreshing = refreshing.clone();
         let power_combo = power_combo.clone();
         let gpu_combo = gpu_combo.clone();
+        let show_cpu_limit = show_cpu_limit.clone();
         cpu_combo.connect_selected_notify(glib::clone!(
             #[weak]
             power_combo,
@@ -1685,6 +1709,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
                 let cpu = cb.selected() as u8;
                 let gpu = gpu_combo.selected() as u8;
                 set_power(ac, (profile, cpu, gpu));
+                show_cpu_limit(ac);
             }
         ));
     }
@@ -1757,7 +1782,34 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
         memory_cap_combo.connect_selected_notify(move |_| apply_gpu_clocks());
     }
 
-    // CPU power limit: notch 0 follows the power mode, the rest fix the limit
+    // CPU power limit override: switching it on fixes the limit at the
+    // slider's notch, which shows the mode's limit until then
+    {
+        let is_ac = is_ac.clone();
+        let refreshing = refreshing.clone();
+        let scale = cpu_limit_slider.scale.clone();
+        let show_cpu_limit = show_cpu_limit.clone();
+        cpu_limit_override.connect_active_notify(move |sw| {
+            if refreshing.get() {
+                return;
+            }
+            let ac = is_ac.get();
+            let limit = sw
+                .is_active()
+                .then(|| {
+                    CPU_LIMIT_NOTCHES
+                        .get(scale.value().round() as usize)
+                        .copied()
+                })
+                .flatten();
+            if set_cpu_power_limit(ac, limit) != Some(true) {
+                show_toast(sw, "Failed to set the CPU power limit");
+            }
+            show_cpu_limit(ac);
+        });
+    }
+
+    // CPU power limit slider, only movable while overridden
     {
         let is_ac = is_ac.clone();
         let refreshing = refreshing.clone();
@@ -1772,9 +1824,7 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
                 return;
             }
             let ac = is_ac.get();
-            let limit = notch
-                .checked_sub(1)
-                .and_then(|i| CPU_LIMIT_NOTCHES.get(i).copied());
+            let limit = CPU_LIMIT_NOTCHES.get(notch).copied();
             if set_cpu_power_limit(ac, limit) != Some(true) {
                 show_toast(sc, "Failed to set the CPU power limit");
             }

@@ -192,7 +192,7 @@ pub fn profile_description(index: u32) -> &'static str {
         0 => "Good mix of performance and battery life",
         1 => "Maximum performance, higher power draw",
         2 => "Optimized for creative workloads",
-        3 => "Minimal noise, reduced performance",
+        3 => "Quietest. The only mode that can stop the fans (0 RPM)",
         4 => "Manually tune CPU and GPU levels",
         _ => "",
     }
